@@ -7,6 +7,7 @@ const {
   deepMerge,
   readConfigEntry,
   resolveSecretsFile,
+  upsertConfigEntry,
 } = require('./lib/local_secret_store');
 
 let lark = null;
@@ -105,6 +106,20 @@ function resolveOptionalDir(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
   return path.resolve(raw);
+}
+
+function resolveOptionalDirList(value) {
+  const parts = Array.isArray(value)
+    ? value
+    : String(value || '')
+      .split(new RegExp(`[\\n,${path.delimiter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}]`, 'g'));
+  const out = [];
+  for (const part of parts) {
+    const resolved = resolveOptionalDir(part);
+    if (!resolved || out.includes(resolved)) continue;
+    out.push(resolved);
+  }
+  return out;
 }
 
 function pickValue(candidates) {
@@ -374,6 +389,10 @@ function resolveCodexConfig(config) {
     VALID_CODEX_APPROVAL_POLICIES.has(approvalPolicy),
     `invalid codex approval_policy "${approvalPolicy}", expected ${Array.from(VALID_CODEX_APPROVAL_POLICIES).join(' | ')}`
   );
+  const cwd = resolveOptionalDir(getArg('--codex-cd', process.env.FEISHU_CODEX_CD || codexConfig.cwd || ''));
+  const addDirs = resolveOptionalDirList(
+    getArg('--codex-add-dirs', process.env.FEISHU_CODEX_ADD_DIRS || codexConfig.add_dirs || codexConfig.addDirs || '')
+  ).filter((dir) => dir !== cwd);
 
   return {
     bin: String(getArg('--codex-bin', process.env.FEISHU_CODEX_BIN || codexConfig.bin || 'codex')).trim() || 'codex',
@@ -385,7 +404,8 @@ function resolveCodexConfig(config) {
       )
     ).trim(),
     profile: String(getArg('--codex-profile', process.env.FEISHU_CODEX_PROFILE || codexConfig.profile || '')).trim(),
-    cwd: resolveOptionalDir(getArg('--codex-cd', process.env.FEISHU_CODEX_CD || codexConfig.cwd || '')),
+    cwd,
+    addDirs,
     // Intentionally disable execution timeout: wait until the task exits naturally.
     timeoutSec: 0,
     historyTurns: asInt(getArg('--history-turns', process.env.FEISHU_HISTORY_TURNS || codexConfig.history_turns), 6, 0, 20),
@@ -650,8 +670,9 @@ function extractSystemPromptAliases(rawText) {
   return aliases;
 }
 
-function resolveMentionAliases({ explicitAliases = [], replyPrefix = '', systemPrompt = '', progressTitlePrefix = '' }) {
+function resolveMentionAliases({ botName = '', explicitAliases = [], replyPrefix = '', systemPrompt = '', progressTitlePrefix = '' }) {
   const aliases = uniqueStrings([
+    botName,
     ...parseMentionAliasList(explicitAliases),
     replyPrefix,
     progressTitlePrefix,
@@ -1156,6 +1177,16 @@ function extractMentionOpenId(mention) {
   ).trim();
 }
 
+function extractMentionName(mention) {
+  return normalizeMentionAlias(
+    mention?.name
+      || mention?.display_name
+      || mention?.displayName
+      || mention?.id?.name
+      || ''
+  );
+}
+
 function isBotMentioned(mentions, botOpenId) {
   const target = String(botOpenId || '').trim();
   if (!target) return false;
@@ -1163,6 +1194,50 @@ function isBotMentioned(mentions, botOpenId) {
     if (extractMentionOpenId(mention) === target) return true;
   }
   return false;
+}
+
+function detectBotOpenIdCandidate(mentions = [], mentionAliases = []) {
+  const aliasSet = new Set(
+    (mentionAliases || [])
+      .map((item) => normalizeMentionAlias(item))
+      .filter(Boolean)
+  );
+  if (aliasSet.size === 0) return null;
+
+  const matched = [];
+  for (const mention of mentions || []) {
+    const openId = extractMentionOpenId(mention);
+    const name = extractMentionName(mention);
+    if (!openId || !name || !aliasSet.has(name)) continue;
+    matched.push({ openId, name });
+  }
+
+  const uniqueMatches = uniqueStrings(matched.map((item) => item.openId));
+  if (uniqueMatches.length !== 1) return null;
+  return matched.find((item) => item.openId === uniqueMatches[0]) || null;
+}
+
+function autoDetectAndPersistBotOpenId({ accountName, creds, mentions = [], mentionAliases = [] }) {
+  if (String(creds?.botOpenId?.value || '').trim()) return '';
+
+  const candidate = detectBotOpenIdCandidate(mentions, mentionAliases);
+  if (!candidate) return '';
+
+  const targetAccount = String(accountName || 'default').trim() || 'default';
+  try {
+    const saved = upsertConfigEntry('feishu', targetAccount, {
+      bot_open_id: candidate.openId,
+    });
+    creds.botOpenId.value = candidate.openId;
+    creds.botOpenId.source = 'config:auto-detected';
+    console.log(
+      `bot_open_id_auto_detected=ok account=${targetAccount} name=${candidate.name || '(unknown)'} file=${saved.filePath}`
+    );
+    return candidate.openId;
+  } catch (err) {
+    console.error(`bot_open_id_auto_detected=error account=${targetAccount} message=${err.message}`);
+    return '';
+  }
 }
 
 function isGroupChat(chatType) {
@@ -1956,11 +2031,17 @@ function handleThreadCommand(state, command) {
   return { handled: false, reply: '' };
 }
 
-function buildCodexPrompt({ systemPrompt, history, userText, imageCount = 0, cwd = '' }) {
+function buildCodexPrompt({ systemPrompt, history, userText, imageCount = 0, cwd = '', addDirs = [] }) {
   const lines = [];
   lines.push(systemPrompt || DEFAULT_CODEX_SYSTEM_PROMPT);
   lines.push('');
   lines.push(`当前工作目录：${cwd || process.cwd()}`);
+  if (Array.isArray(addDirs) && addDirs.length > 0) {
+    lines.push('额外可访问工作目录：');
+    for (const dir of addDirs) {
+      lines.push(`- ${dir}`);
+    }
+  }
   lines.push('');
   lines.push('对话上下文（按时间顺序，可能为空）：');
   if (!history || history.length === 0) {
@@ -1995,6 +2076,7 @@ function runCodexExec({
   reasoningEffort,
   profile,
   cwd,
+  addDirs = [],
   sandbox,
   approvalPolicy,
   apiKey = '',
@@ -2011,6 +2093,10 @@ function runCodexExec({
     if (reasoningEffort) args.push('-c', `model_reasoning_effort=\"${reasoningEffort}\"`);
     if (profile) args.push('-p', profile);
     if (cwd) args.push('-C', cwd);
+    for (const dir of addDirs || []) {
+      if (!String(dir || '').trim()) continue;
+      args.push('--add-dir', dir);
+    }
     if (sandbox) args.push('-s', sandbox);
     if (approvalPolicy) args.push('-c', `approval_policy=\"${approvalPolicy}\"`);
     for (const imagePath of imagePaths || []) {
@@ -2114,6 +2200,7 @@ async function generateCodexReply({ codex, history, userText, imagePaths = [], o
     userText,
     imageCount: Array.isArray(imagePaths) ? imagePaths.length : 0,
     cwd: codex.cwd,
+    addDirs: codex.addDirs,
   });
 
   const reply = await runCodexExec({
@@ -2122,6 +2209,7 @@ async function generateCodexReply({ codex, history, userText, imagePaths = [], o
     reasoningEffort: codex.reasoningEffort,
     profile: codex.profile,
     cwd: codex.cwd,
+    addDirs: codex.addDirs,
     apiKey: codex.apiKey,
     sandbox: codex.sandbox,
     approvalPolicy: codex.approvalPolicy,
@@ -3125,6 +3213,7 @@ async function main() {
   const domain = resolveDomain(domainInput);
   const autoReply = asBool(getArg('--auto-reply', process.env.FEISHU_AUTO_REPLY || config.auto_reply), true);
   const ignoreSelf = asBool(getArg('--ignore-self', process.env.FEISHU_IGNORE_SELF_MESSAGES || config.ignore_self_messages), true);
+  const botName = String(getArg('--bot-name', process.env.FEISHU_BOT_NAME || config.bot_name || '')).trim();
   const replyPrefix = getArg('--reply-prefix', process.env.FEISHU_REPLY_PREFIX || config.reply_prefix || '');
   const replyMode = resolveReplyMode(config);
   const progress = resolveProgressConfig(config);
@@ -3137,6 +3226,7 @@ async function main() {
   const speech = resolveSpeechConfig(config, codex);
   const codexDetect = detectCodex(codex.bin);
   const mentionAliases = resolveMentionAliases({
+    botName,
     explicitAliases: config.mention_aliases,
     replyPrefix,
     systemPrompt: codex.systemPrompt,
@@ -3158,8 +3248,10 @@ async function main() {
     if (creds.verificationToken.source) console.log(`verification_token_source=${creds.verificationToken.source}`);
     console.log(`bot_open_id_found=${creds.botOpenId.value ? 'true' : 'false'}`);
     if (creds.botOpenId.source) console.log(`bot_open_id_source=${creds.botOpenId.source}`);
+    console.log(`bot_open_id_autodetect=${mentionConfig.requireMention ? 'enabled' : 'not_needed'}`);
     console.log(`auto_reply=${autoReply ? 'true' : 'false'}`);
     console.log(`ignore_self=${ignoreSelf ? 'true' : 'false'}`);
+    console.log(`bot_name=${botName || '(none)'}`);
     console.log(`require_mention=${mentionConfig.requireMention ? 'true' : 'false'}`);
     console.log(`require_mention_group_only=${mentionConfig.groupOnly ? 'true' : 'false'}`);
     console.log(`mention_aliases=${mentionAliases.length > 0 ? mentionAliases.join(' | ') : '(none)'}`);
@@ -3190,6 +3282,7 @@ async function main() {
     console.log(`codex_reasoning_effort=${codex.reasoningEffort || '(default)'}`);
     console.log(`codex_profile=${codex.profile || '(default)'}`);
     console.log(`codex_cwd=${codex.cwd || process.cwd()}`);
+    console.log(`codex_add_dirs=${codex.addDirs.length > 0 ? codex.addDirs.join(' | ') : '(none)'}`);
     console.log(`codex_sandbox=${codex.sandbox}`);
     console.log(`codex_approval_policy=${codex.approvalPolicy}`);
     console.log(`codex_timeout_sec=${codex.timeoutSec || '(disabled)'}`);
@@ -3207,9 +3300,6 @@ async function main() {
 
   ensure(creds.appId.value, `feishu app_id not found for account "${accountName}"`);
   ensure(creds.appSecret.value, `feishu app_secret not found for account "${accountName}"`);
-  if (mentionConfig.requireMention) {
-    ensure(creds.botOpenId.value, `feishu bot_open_id required when require_mention enabled for account "${accountName}"`);
-  }
   if (replyMode === 'codex') {
     ensure(codexDetect.found, `codex binary not found: ${codex.bin}`);
   }
@@ -3235,7 +3325,6 @@ async function main() {
     const messageID = message.message_id || '';
     const messageType = message.message_type || '';
     const mentions = Array.isArray(message.mentions) ? message.mentions : [];
-    const botMentioned = isBotMentioned(mentions, creds.botOpenId.value);
     const parsedText = messageType === 'text' ? parseMessageText(message.content || '') : '';
     const parsedFile = messageType === 'file' ? parseFileMessageContent(message.content || '') : { fileKey: '', fileName: '', fileSize: 0 };
     const parsedAudio = messageType === 'audio' ? parseAudioMessageContent(message.content || '') : { fileKey: '', durationMs: 0 };
@@ -3243,6 +3332,15 @@ async function main() {
     const normalizedMessageText = messageType === 'post' ? parsedPost.text : parsedText;
     const textMentionAlias = detectTextualBotMention(normalizedMessageText, mentionAliases);
     const mentionMatchedByText = Boolean(textMentionAlias);
+    if (!creds.botOpenId.value && mentions.length > 0) {
+      autoDetectAndPersistBotOpenId({
+        accountName,
+        creds,
+        mentions,
+        mentionAliases,
+      });
+    }
+    const botMentioned = isBotMentioned(mentions, creds.botOpenId.value);
     const text = normalizeIncomingText(normalizedMessageText, mentions, mentionAliases);
     const now = Date.now();
     const imageKeys = [];
@@ -3631,8 +3729,10 @@ async function main() {
   console.log(`domain=${domain.label}`);
   console.log(`auto_reply=${autoReply ? 'true' : 'false'}`);
   console.log(`ignore_self=${ignoreSelf ? 'true' : 'false'}`);
+  console.log(`bot_name=${botName || '(none)'}`);
   console.log(`require_mention=${mentionConfig.requireMention ? 'true' : 'false'}`);
   console.log(`require_mention_group_only=${mentionConfig.groupOnly ? 'true' : 'false'}`);
+  console.log(`bot_open_id_autodetect=${mentionConfig.requireMention ? 'enabled' : 'not_needed'}`);
   console.log(`mention_aliases=${mentionAliases.length > 0 ? mentionAliases.join(' | ') : '(none)'}`);
   console.log(`reply_mode=${replyMode}`);
   console.log(`typing_indicator=${typing.enabled ? 'true' : 'false'}`);
@@ -3653,6 +3753,7 @@ async function main() {
     console.log(`codex_reasoning_effort=${codex.reasoningEffort || '(default)'}`);
     console.log(`codex_profile=${codex.profile || '(default)'}`);
     console.log(`codex_cwd=${codex.cwd || process.cwd()}`);
+    console.log(`codex_add_dirs=${codex.addDirs.length > 0 ? codex.addDirs.join(' | ') : '(none)'}`);
     console.log(`codex_sandbox=${codex.sandbox}`);
     console.log(`codex_approval_policy=${codex.approvalPolicy}`);
     console.log(`codex_timeout_sec=${codex.timeoutSec || '(disabled)'}`);

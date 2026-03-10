@@ -4,6 +4,7 @@
   "encrypt_key": "",
   "verification_token": "",
   "bot_open_id": "",
+  "bot_name": "",
   "domain": "feishu",
   "reply_mode": "codex",
   "reply_prefix": "AI 助手：",
@@ -30,6 +31,7 @@
     "reasoning_effort": "",
     "profile": "",
     "cwd": "",
+    "add_dirs": [],
     "timeout_sec": 0,
     "history_turns": 6,
     "system_prompt": "你是“飞书 Codex 助手”，通过飞书和用户交流。请直接回答用户问题，不要复述用户原话。"

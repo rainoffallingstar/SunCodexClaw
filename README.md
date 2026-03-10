@@ -184,6 +184,7 @@ config:
       encrypt_key: "..."
       verification_token: "..."
       bot_open_id: "ou_xxx"
+      bot_name: "飞书 Codex 助手"
       domain: "feishu"
       reply_mode: "codex"
       reply_prefix: "AI 助手："
@@ -204,6 +205,8 @@ config:
         model: "gpt-5.4"
         reasoning_effort: "xhigh"
         cwd: "/absolute/path/to/workspace"
+        add_dirs:
+          - "/absolute/path/to/another/workspace"
         history_turns: 6
         sandbox: "danger-full-access"
         approval_policy: "never"
@@ -215,6 +218,7 @@ config:
 
 ```json
 {
+  "bot_name": "AI 助手",
   "reply_mode": "codex",
   "reply_prefix": "AI 助手：",
   "require_mention": true,
@@ -227,7 +231,10 @@ config:
     }
   },
   "codex": {
-    "cwd": "/absolute/path/to/workspace"
+    "cwd": "/absolute/path/to/workspace",
+    "add_dirs": [
+      "/absolute/path/to/another/workspace"
+    ]
   }
 }
 ```
@@ -236,7 +243,10 @@ config:
 
 - 密钥尽量只放 `local.yaml`
 - `config/feishu/<account>.json` 留给运行参数
+- 部署时优先显式填写 `bot_name`，让群里 `@` 识别和 `bot_open_id` 自动探测更稳定
 - 每个机器人单独配置 `codex.cwd`
+- 如果需要跨多个目录工作，可以额外配置 `codex.add_dirs`
+- `bot_open_id` 可以不手填，群里第一次成功 `@` 机器人后会自动探测并持久化
 - 如果你已经通过 `codex login` 登录，也可以不填 `codex.api_key`
 
 ## 快速验证
@@ -283,7 +293,8 @@ node tools/feishu_ws_bot.js --account assistant --dry-run
 - `app_secret`
 - `encrypt_key`
 - `verification_token`
-- `bot_open_id`
+- `bot_name`
+- `bot_open_id`（可选，缺省时会在第一次成功 `@` 机器人后自动探测并写回 `local.yaml`）
 
 ### 必订阅事件
 
