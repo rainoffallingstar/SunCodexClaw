@@ -6,8 +6,6 @@ const { spawn, spawnSync } = require('child_process');
 const {
   deepMerge,
   readConfigEntry,
-  readKeychainSecret,
-  readYamlServiceSecret,
   resolveSecretsFile,
 } = require('./lib/local_secret_store');
 
@@ -128,68 +126,31 @@ function resolveDomain(domainValue) {
   throw new Error(`invalid domain "${raw}", expected feishu | lark | https://open.xxx.com`);
 }
 
-function resolveCredentials(config, accountName) {
-  const keychain = config.keychain || {};
-
-  const scopedServices = {
-    appId: keychain.app_id_service || `feishu-app-id:${accountName}`,
-    appSecret: keychain.app_secret_service || `feishu-app-secret:${accountName}`,
-    encryptKey: keychain.encrypt_key_service || `feishu-encrypt-key:${accountName}`,
-    verificationToken: keychain.verification_token_service || `feishu-verification-token:${accountName}`,
-    botOpenId: keychain.bot_open_id_service || `feishu-bot-open-id:${accountName}`,
-  };
-  const fallbackServices = {
-    appId: keychain.app_id_fallback_service || 'feishu-app-id',
-    appSecret: keychain.app_secret_fallback_service || 'feishu-app-secret',
-    encryptKey: keychain.encrypt_key_fallback_service || 'feishu-encrypt-key',
-    verificationToken: keychain.verification_token_fallback_service || 'feishu-verification-token',
-    botOpenId: keychain.bot_open_id_fallback_service || 'feishu-bot-open-id',
-  };
-
+function resolveCredentials(config) {
   const appId = pickValue([
     ['cli', getArg('--app-id', '')],
     ['env', process.env.FEISHU_APP_ID || ''],
-    ['yaml_scoped', readYamlServiceSecret(scopedServices.appId)],
-    ['yaml_fallback', readYamlServiceSecret(fallbackServices.appId)],
     ['config', config.app_id || ''],
-    ['keychain_scoped', readKeychainSecret(scopedServices.appId)],
-    ['keychain_fallback', readKeychainSecret(fallbackServices.appId)],
   ]);
   const appSecret = pickValue([
     ['cli', getArg('--app-secret', '')],
     ['env', process.env.FEISHU_APP_SECRET || ''],
-    ['yaml_scoped', readYamlServiceSecret(scopedServices.appSecret)],
-    ['yaml_fallback', readYamlServiceSecret(fallbackServices.appSecret)],
     ['config', config.app_secret || ''],
-    ['keychain_scoped', readKeychainSecret(scopedServices.appSecret)],
-    ['keychain_fallback', readKeychainSecret(fallbackServices.appSecret)],
   ]);
   const encryptKey = pickValue([
     ['cli', getArg('--encrypt-key', '')],
     ['env', process.env.FEISHU_ENCRYPT_KEY || ''],
-    ['yaml_scoped', readYamlServiceSecret(scopedServices.encryptKey)],
-    ['yaml_fallback', readYamlServiceSecret(fallbackServices.encryptKey)],
     ['config', config.encrypt_key || ''],
-    ['keychain_scoped', readKeychainSecret(scopedServices.encryptKey)],
-    ['keychain_fallback', readKeychainSecret(fallbackServices.encryptKey)],
   ]);
   const verificationToken = pickValue([
     ['cli', getArg('--verification-token', '')],
     ['env', process.env.FEISHU_VERIFICATION_TOKEN || ''],
-    ['yaml_scoped', readYamlServiceSecret(scopedServices.verificationToken)],
-    ['yaml_fallback', readYamlServiceSecret(fallbackServices.verificationToken)],
     ['config', config.verification_token || ''],
-    ['keychain_scoped', readKeychainSecret(scopedServices.verificationToken)],
-    ['keychain_fallback', readKeychainSecret(fallbackServices.verificationToken)],
   ]);
   const botOpenId = pickValue([
     ['cli', getArg('--bot-open-id', '')],
     ['env', process.env.FEISHU_BOT_OPEN_ID || ''],
-    ['yaml_scoped', readYamlServiceSecret(scopedServices.botOpenId)],
-    ['yaml_fallback', readYamlServiceSecret(fallbackServices.botOpenId)],
     ['config', config.bot_open_id || ''],
-    ['keychain_scoped', readKeychainSecret(scopedServices.botOpenId)],
-    ['keychain_fallback', readKeychainSecret(fallbackServices.botOpenId)],
   ]);
 
   return {
@@ -357,18 +318,13 @@ function resolveFakeStreamConfig(config) {
   };
 }
 
-function resolveCodexConfig(config, accountName) {
+function resolveCodexConfig(config) {
   const codexConfig = config.codex || {};
-  const keychain = codexConfig.keychain || {};
   const apiKey = pickValue([
     ['cli', getArg('--codex-api-key', '')],
     ['env', process.env.CODEX_API_KEY || ''],
     ['env_openai', process.env.OPENAI_API_KEY || ''],
-    ['yaml_scoped', readYamlServiceSecret(keychain.api_key_service || `openai-api-key:${accountName}`)],
-    ['yaml_fallback', readYamlServiceSecret(keychain.api_key_fallback_service || 'openai-api-key')],
     ['config', codexConfig.api_key || ''],
-    ['keychain_scoped', readKeychainSecret(keychain.api_key_service || `openai-api-key:${accountName}`)],
-    ['keychain_fallback', readKeychainSecret(keychain.api_key_fallback_service || 'openai-api-key')],
   ]);
   const sandbox = String(
     getArg('--codex-sandbox', process.env.FEISHU_CODEX_SANDBOX || codexConfig.sandbox || 'danger-full-access')
@@ -403,7 +359,8 @@ function resolveCodexConfig(config, accountName) {
     timeoutSec: 0,
     historyTurns: asInt(getArg('--history-turns', process.env.FEISHU_HISTORY_TURNS || codexConfig.history_turns), 6, 0, 20),
     systemPrompt: String(getArg('--system-prompt', process.env.FEISHU_CODEX_SYSTEM_PROMPT || codexConfig.system_prompt || DEFAULT_CODEX_SYSTEM_PROMPT)).trim(),
-    apiKey,
+    apiKey: apiKey.value,
+    apiKeySource: apiKey.source,
     sandbox,
     approvalPolicy,
   };
@@ -1664,6 +1621,7 @@ function runCodexExec({
   cwd,
   sandbox,
   approvalPolicy,
+  apiKey = '',
   prompt,
   imagePaths = [],
   onEvent = null,
@@ -1685,9 +1643,16 @@ function runCodexExec({
     }
     args.push('--output-last-message', outputFile, '-');
 
+    const childEnv = { ...process.env };
+    const resolvedApiKey = String(apiKey || '').trim();
+    if (resolvedApiKey) {
+      childEnv.OPENAI_API_KEY = resolvedApiKey;
+      childEnv.CODEX_API_KEY = resolvedApiKey;
+    }
+
     const child = spawn(bin, args, {
       cwd: cwd || process.cwd(),
-      env: process.env,
+      env: childEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -1781,6 +1746,7 @@ async function generateCodexReply({ codex, history, userText, imagePaths = [], o
     reasoningEffort: codex.reasoningEffort,
     profile: codex.profile,
     cwd: codex.cwd,
+    apiKey: codex.apiKey,
     sandbox: codex.sandbox,
     approvalPolicy: codex.approvalPolicy,
     prompt,
@@ -2694,8 +2660,8 @@ async function main() {
   const mentionConfig = resolveMentionConfig(config);
   const fakeStream = resolveFakeStreamConfig(config);
 
-  const creds = resolveCredentials(config, accountName);
-  const codex = resolveCodexConfig(config, accountName);
+  const creds = resolveCredentials(config);
+  const codex = resolveCodexConfig(config);
   const codexDetect = detectCodex(codex.bin);
   const mentionAliases = resolveMentionAliases({
     explicitAliases: config.mention_aliases,
@@ -2745,6 +2711,8 @@ async function main() {
     console.log(`codex_bin=${codex.bin}`);
     console.log(`codex_found=${codexDetect.found ? 'true' : 'false'}`);
     if (codexDetect.version) console.log(`codex_version=${codexDetect.version}`);
+    console.log(`codex_api_key_found=${codex.apiKey ? 'true' : 'false'}`);
+    if (codex.apiKeySource) console.log(`codex_api_key_source=${codex.apiKeySource}`);
     console.log(`codex_model=${codex.model || '(default)'}`);
     console.log(`codex_reasoning_effort=${codex.reasoningEffort || '(default)'}`);
     console.log(`codex_profile=${codex.profile || '(default)'}`);

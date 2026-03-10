@@ -1,0 +1,19 @@
+<svg width="1400" height="920" viewBox="0 0 1400 920" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1400" height="920" rx="28" fill="#FFF7ED"/>
+  <text x="60" y="92" fill="#9A3412" font-family="system-ui, -apple-system, BlinkMacSystemFont, sans-serif" font-size="42" font-weight="700">飞书开放平台操作路径</text>
+
+  <rect x="60" y="140" width="1280" height="200" rx="24" fill="#FFFFFF" stroke="#FDBA74" stroke-width="2"/>
+  <text x="100" y="200" fill="#111827" font-family="system-ui, sans-serif" font-size="34" font-weight="700">1. 机器人能力</text>
+  <text x="100" y="254" fill="#374151" font-family="system-ui, sans-serif" font-size="28">飞书开放平台 → 应用详情 → 机器人</text>
+  <text x="100" y="302" fill="#374151" font-family="system-ui, sans-serif" font-size="28">确认应用已启用机器人，并能被会话邀请</text>
+
+  <rect x="60" y="380" width="1280" height="200" rx="24" fill="#FFFFFF" stroke="#FDBA74" stroke-width="2"/>
+  <text x="100" y="440" fill="#111827" font-family="system-ui, sans-serif" font-size="34" font-weight="700">2. 事件订阅</text>
+  <text x="100" y="494" fill="#374151" font-family="system-ui, sans-serif" font-size="28">飞书开放平台 → 应用详情 → 开发配置 → 事件与回调</text>
+  <text x="100" y="542" fill="#374151" font-family="system-ui, sans-serif" font-size="28">订阅 im.message.receive_v1，并填写 Encrypt Key / Verification Token</text>
+
+  <rect x="60" y="620" width="1280" height="200" rx="24" fill="#FFFFFF" stroke="#FDBA74" stroke-width="2"/>
+  <text x="100" y="680" fill="#111827" font-family="system-ui, sans-serif" font-size="34" font-weight="700">3. 权限配置</text>
+  <text x="100" y="734" fill="#374151" font-family="system-ui, sans-serif" font-size="28">飞书开放平台 → 应用详情 → 权限管理与授权 → 权限配置</text>
+  <text x="100" y="782" fill="#374151" font-family="system-ui, sans-serif" font-size="28">至少开通消息、资源、docx、drive 相关权限</text>
+</svg>

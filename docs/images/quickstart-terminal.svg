@@ -1,0 +1,25 @@
+<svg width="1400" height="860" viewBox="0 0 1400 860" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1400" height="860" rx="28" fill="#0B1220"/>
+  <rect x="40" y="40" width="1320" height="780" rx="24" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <circle cx="88" cy="86" r="10" fill="#F87171"/>
+  <circle cx="122" cy="86" r="10" fill="#FBBF24"/>
+  <circle cx="156" cy="86" r="10" fill="#34D399"/>
+  <text x="220" y="94" fill="#E5E7EB" font-family="Menlo, Monaco, monospace" font-size="28">SunCodexClaw Quick Start</text>
+
+  <text x="84" y="160" fill="#93C5FD" font-family="Menlo, Monaco, monospace" font-size="28">$ codex --version</text>
+  <text x="84" y="204" fill="#E5E7EB" font-family="Menlo, Monaco, monospace" font-size="28">codex-cli 0.x</text>
+
+  <text x="84" y="278" fill="#93C5FD" font-family="Menlo, Monaco, monospace" font-size="28">$ git clone git@github.com:Sunbelife/SunCodexClaw.git</text>
+  <text x="84" y="322" fill="#93C5FD" font-family="Menlo, Monaco, monospace" font-size="28">$ cd SunCodexClaw</text>
+  <text x="84" y="366" fill="#93C5FD" font-family="Menlo, Monaco, monospace" font-size="28">$ npm install</text>
+
+  <text x="84" y="450" fill="#93C5FD" font-family="Menlo, Monaco, monospace" font-size="28">$ cp config/secrets/local.example.yaml config/secrets/local.yaml</text>
+  <text x="84" y="494" fill="#93C5FD" font-family="Menlo, Monaco, monospace" font-size="28">$ cp config/feishu/default.example.json config/feishu/default.json</text>
+
+  <text x="84" y="578" fill="#93C5FD" font-family="Menlo, Monaco, monospace" font-size="28">$ node tools/feishu_ws_bot.js --account assistant --dry-run</text>
+  <text x="84" y="622" fill="#D1FAE5" font-family="Menlo, Monaco, monospace" font-size="28">FEISHU_WS_DRY_RUN</text>
+  <text x="84" y="666" fill="#D1FAE5" font-family="Menlo, Monaco, monospace" font-size="28">codex_found=true</text>
+  <text x="84" y="710" fill="#D1FAE5" font-family="Menlo, Monaco, monospace" font-size="28">app_id_found=true</text>
+
+  <text x="84" y="776" fill="#93C5FD" font-family="Menlo, Monaco, monospace" font-size="28">$ bash tools/feishu_bot_ctl.sh start all</text>
+</svg>

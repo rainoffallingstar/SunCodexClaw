@@ -1,0 +1,34 @@
+<svg width="1400" height="900" viewBox="0 0 1400 900" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1400" height="900" rx="28" fill="#F3F4F6"/>
+  <rect x="50" y="50" width="620" height="800" rx="24" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+  <rect x="730" y="50" width="620" height="800" rx="24" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+
+  <text x="90" y="110" fill="#111827" font-family="Menlo, Monaco, monospace" font-size="34">config/feishu/&lt;account&gt;.json</text>
+  <text x="90" y="160" fill="#475569" font-family="Menlo, Monaco, monospace" font-size="24">放非敏感运行项</text>
+  <text x="90" y="225" fill="#0F172A" font-family="Menlo, Monaco, monospace" font-size="26">- reply_mode / progress_mode</text>
+  <text x="90" y="270" fill="#0F172A" font-family="Menlo, Monaco, monospace" font-size="26">- codex.cwd / model / sandbox</text>
+  <text x="90" y="315" fill="#0F172A" font-family="Menlo, Monaco, monospace" font-size="26">- require_mention / reply_prefix</text>
+  <text x="90" y="360" fill="#0F172A" font-family="Menlo, Monaco, monospace" font-size="26">- 云文档标题 / 线程 / 假流式</text>
+
+  <rect x="90" y="430" width="540" height="340" rx="18" fill="#0F172A"/>
+  <text x="118" y="485" fill="#A5F3FC" font-family="Menlo, Monaco, monospace" font-size="22">{</text>
+  <text x="118" y="530" fill="#E5E7EB" font-family="Menlo, Monaco, monospace" font-size="22">  "reply_mode": "codex",</text>
+  <text x="118" y="575" fill="#E5E7EB" font-family="Menlo, Monaco, monospace" font-size="22">  "progress": { "mode": "doc" },</text>
+  <text x="118" y="620" fill="#E5E7EB" font-family="Menlo, Monaco, monospace" font-size="22">  "codex": { "cwd": "/abs/path" }</text>
+  <text x="118" y="665" fill="#A5F3FC" font-family="Menlo, Monaco, monospace" font-size="22">}</text>
+
+  <text x="770" y="110" fill="#111827" font-family="Menlo, Monaco, monospace" font-size="34">config/secrets/local.yaml</text>
+  <text x="770" y="160" fill="#475569" font-family="Menlo, Monaco, monospace" font-size="24">放敏感项和本机私有覆盖</text>
+  <text x="770" y="225" fill="#0F172A" font-family="Menlo, Monaco, monospace" font-size="26">- app_id / app_secret</text>
+  <text x="770" y="270" fill="#0F172A" font-family="Menlo, Monaco, monospace" font-size="26">- encrypt_key / verification_token</text>
+  <text x="770" y="315" fill="#0F172A" font-family="Menlo, Monaco, monospace" font-size="26">- bot_open_id</text>
+  <text x="770" y="360" fill="#0F172A" font-family="Menlo, Monaco, monospace" font-size="26">- codex.api_key</text>
+
+  <rect x="770" y="430" width="540" height="340" rx="18" fill="#0F172A"/>
+  <text x="798" y="485" fill="#A7F3D0" font-family="Menlo, Monaco, monospace" font-size="22">config:</text>
+  <text x="798" y="530" fill="#E5E7EB" font-family="Menlo, Monaco, monospace" font-size="22">  feishu:</text>
+  <text x="798" y="575" fill="#E5E7EB" font-family="Menlo, Monaco, monospace" font-size="22">    assistant:</text>
+  <text x="798" y="620" fill="#E5E7EB" font-family="Menlo, Monaco, monospace" font-size="22">      app_id: "cli_xxx"</text>
+  <text x="798" y="665" fill="#E5E7EB" font-family="Menlo, Monaco, monospace" font-size="22">      codex:</text>
+  <text x="798" y="710" fill="#E5E7EB" font-family="Menlo, Monaco, monospace" font-size="22">        api_key: "sk-..."</text>
+</svg>

@@ -1,7 +1,14 @@
 {
+  "app_id": "",
+  "app_secret": "",
+  "encrypt_key": "",
+  "verification_token": "",
+  "bot_open_id": "",
   "domain": "feishu",
   "reply_mode": "codex",
   "reply_prefix": "AI 助手：",
+  "require_mention": true,
+  "require_mention_group_only": true,
   "ignore_self_messages": true,
   "auto_reply": true,
   "progress": {
@@ -18,28 +25,13 @@
   },
   "codex": {
     "bin": "codex",
+    "api_key": "",
     "model": "",
     "reasoning_effort": "",
     "profile": "",
     "cwd": "",
     "timeout_sec": 0,
     "history_turns": 6,
-    "system_prompt": "你是“飞书 Codex 助手”，通过飞书和用户交流。请直接回答用户问题，不要复述用户原话。",
-    "keychain": {
-      "api_key_service": "openai-api-key:default",
-      "api_key_fallback_service": "openai-api-key"
-    }
-  },
-  "keychain": {
-    "app_id_service": "feishu-app-id:default",
-    "app_secret_service": "feishu-app-secret:default",
-    "encrypt_key_service": "feishu-encrypt-key:default",
-    "verification_token_service": "feishu-verification-token:default",
-    "bot_open_id_service": "feishu-bot-open-id:default",
-    "app_id_fallback_service": "feishu-app-id",
-    "app_secret_fallback_service": "feishu-app-secret",
-    "encrypt_key_fallback_service": "feishu-encrypt-key",
-    "verification_token_fallback_service": "feishu-verification-token",
-    "bot_open_id_fallback_service": "feishu-bot-open-id"
+    "system_prompt": "你是“飞书 Codex 助手”，通过飞书和用户交流。请直接回答用户问题，不要复述用户原话。"
   }
 }

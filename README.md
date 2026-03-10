@@ -1,19 +1,115 @@
 # SunCodexClaw
 
-`SunCodexClaw` 是一个可独立运行的飞书机器人项目。它通过飞书 WebSocket 长连接接收消息，把请求交给本机 `codex exec` 处理，并把过程回写到飞书消息或飞书云文档。
+`SunCodexClaw` 是一个面向飞书工作流的 Codex 机器人项目。
 
-这套项目已经内置了几项实战能力：
+它不是把 LLM 包一层聊天壳，而是把飞书消息、Codex 工作区、文件读写、云文档进度、多账号运行和本机执行能力串成一条能真正干活的链路。
 
-- 文本消息自动回复
-- 群聊 `@机器人` 触发
-- 图片消息下载后交给 Codex 分析
-- 文件消息下载到本地临时路径后交给 Codex 读取
-- Codex 反向请求“把本机某个文件发回飞书”
-- 多线程会话上下文
-- 进度实时回写到飞书消息或云文档
-- 多账号、多工作目录、多机器人统一启停
+![Quick Start](docs/images/quickstart-terminal.svg)
 
-## 目录结构
+## 这是什么
+
+项目核心是：
+
+- 飞书 WebSocket 长连接收消息
+- 按账号把消息路由到对应的 `codex cwd`
+- 用 `codex exec --json` 执行任务
+- 把过程写回飞书消息或飞书云文档
+- 支持图片分析、文件读取、文件回传、线程记忆、Skills、本机操作
+
+这套项目特别适合那种“在飞书里提任务，机器人直接去代码库和电脑上干活，再把过程回给你”的工作方式。
+
+## 和 OpenClaw 的区别
+
+相对 OpenClaw 这类更通用的聊天外壳，这个项目的设计重点是“在飞书里把事做完”：
+
+- 更省 token：
+  - 只保留有限轮历史，而不是无上限堆聊天记录
+  - 图片和文件先下载到本地，再把本地路径交给 Codex，避免把大块原文反复塞进上下文
+  - 进度默认走飞书消息或云文档，不把完整过程反复塞回模型
+- 更像真正干活的机器人：
+  - 它直接跑本机 `codex exec`
+  - 所以可以读写文件、执行命令、在工作目录里改代码、产出文件并回发给飞书
+- 对飞书适配更深：
+  - 支持群聊 `@` 触发
+  - 支持“先 @ 再单独发文件/图片”的连续工作流
+  - 支持飞书云文档进度、文档排版、文档链接回发
+  - 支持多账号、多机器人统一启停和 LaunchAgents
+- 自带记忆：
+  - 每个会话有线程上下文
+  - 支持 `/thread new`、`/thread switch`、`/reset`
+- 同样支持 Skills：
+  - 机器人背后跑的是 Codex
+  - 只要你的 Codex 环境能用 Skills，这个机器人也能用
+- 可以操作电脑：
+  - 本质上是 Codex 在你的机器上执行
+  - 在 `codex` 权限允许的前提下，可以直接处理本机文件、命令和项目工作区
+
+如果你要的是“飞书里的助手真的能去代码库和电脑上干活”，这个项目比一个通用聊天壳更合适。
+
+## 工作方式
+
+你在飞书里给机器人发消息，机器人会按下面的路径工作：
+
+1. 收到文本 / 图片 / 文件消息
+2. 归一化成适合 Codex 的输入
+3. 在账号绑定的 `codex.cwd` 里执行 `codex exec`
+4. 持续记录进度
+5. 把最终回复、文件或云文档链接回发到飞书
+
+这意味着它的核心不是“聊天”，而是“消息驱动的本机执行”。
+
+## 先决条件
+
+在使用这个项目之前，你需要先有：
+
+- 可正常使用的 `codex` CLI
+- 对应的 Codex / OpenAI token 或已登录态
+- 一台能运行 `codex` 的机器
+- 一个飞书企业自建应用
+
+官方参考：
+
+- [OpenAI Codex getting started](https://help.openai.com/en/articles/11096431-openai-codex-ci-getting-started)
+- [Codex CLI and ChatGPT plan access](https://help.openai.com/en/articles/11381614-codex-cli-and-chatgpt-plan-access)
+- [OpenAI API keys](https://platform.openai.com/api-keys)
+- [飞书开放平台控制台](https://open.feishu.cn/app)
+- [飞书开放平台文档首页](https://open.feishu.cn/document/home/index)
+
+## 安装
+
+建议直接在你平时用来跑 Codex 的环境里 clone 这个项目。
+
+```bash
+git clone git@github.com:Sunbelife/SunCodexClaw.git
+cd SunCodexClaw
+npm install
+```
+
+如果你是在 Codex 的工作环境里操作，直接把这个仓库 clone 到本机，再按下面步骤配置即可。
+
+## 配置模型
+
+当前读取顺序是：
+
+1. 命令行参数
+2. 环境变量
+3. `config/secrets/local.yaml`
+4. `config/feishu/<account>.json`
+
+不再支持 Keychain。
+
+推荐把配置拆成两层：
+
+- `config/secrets/local.yaml`
+  - 放敏感项和本机私有配置
+  - 例如：飞书应用密钥、Bot Open ID、Codex token
+- `config/feishu/<account>.json`
+  - 放非敏感运行项
+  - 例如：回复模式、工作目录、进度模式、群聊触发规则
+
+![Config Layout](docs/images/config-layout.svg)
+
+目录结构：
 
 ```text
 SunCodexClaw/
@@ -24,193 +120,147 @@ SunCodexClaw/
 │   └── secrets/
 │       ├── local.example.yaml
 │       └── local.yaml
+├── docs/images/
 ├── tools/
 │   ├── feishu_ws_bot.js
 │   ├── feishu_bot_ctl.sh
 │   ├── install_feishu_launchagents.sh
-│   ├── save_feishu_account_keychain.sh
 │   └── lib/local_secret_store.js
 └── README.md
 ```
 
-## 运行要求
-
-- macOS 或 Linux
-- Node.js 18+
-- 已安装并能在终端执行的 `codex`
-- 一个飞书自建应用
-- 应用已启用机器人能力
-- 应用已发布到当前租户并可被会话拉入
-
-首次安装依赖：
-
-```bash
-cd /Users/Sun/Code/SunCodexClaw
-npm install
-```
-
-## 配置模型
-
-项目把配置拆成两层：
-
-- `config/feishu/<account>.json`
-  - 放每个机器人的非敏感运行配置
-  - 例如：工作目录、回复模式、云文档模式、会话规则、回复前缀
-- `config/secrets/local.yaml`
-  - 放敏感信息和本机私有配置
-  - 例如：OpenAI API Key、飞书 App ID、App Secret、Encrypt Key、Verification Token、Bot Open ID
-
-另外也支持 macOS Keychain。当前读取顺序是：
-
-1. 命令行参数
-2. 环境变量
-3. `config/secrets/local.yaml`
-4. `config/feishu/<account>.json`
-5. macOS Keychain
-
-敏感文件默认不会进入 Git：
-
-- `config/feishu/*.json`
-- `config/secrets/*.yaml`
-- `.runtime/`
-
-## 基本配置
+## 配置示例
 
 先复制模板：
 
 ```bash
-cp config/feishu/default.example.json config/feishu/default.json
 cp config/secrets/local.example.yaml config/secrets/local.yaml
-```
-
-然后按账号创建独立配置，例如：
-
-```bash
-cp config/feishu/default.json config/feishu/assistant.json
-```
-
-### `config/feishu/<account>.json`
-
-这一层推荐只保留运行项，比如：
-
-```json
-{
-  "domain": "feishu",
-  "reply_mode": "codex",
-  "reply_prefix": "AI 助手：",
-  "ignore_self_messages": true,
-  "auto_reply": true,
-  "require_mention": true,
-  "require_mention_group_only": true,
-  "progress": {
-    "enabled": true,
-    "message": "已接收，正在执行。",
-    "mode": "doc",
-    "doc": {
-      "title_prefix": "AI 助手｜任务进度",
-      "share_to_chat": true,
-      "link_scope": "same_tenant",
-      "include_user_message": true,
-      "write_final_reply": true
-    }
-  },
-  "codex": {
-    "bin": "codex",
-    "model": "gpt-5.4",
-    "reasoning_effort": "xhigh",
-    "cwd": "/absolute/path/to/workspace",
-    "history_turns": 6,
-    "system_prompt": "你是“飞书 Codex 助手”，通过飞书和用户交流。请直接回答用户问题，不要复述用户原话。",
-    "keychain": {
-      "api_key_service": "openai-api-key",
-      "api_key_fallback_service": "openai-api-key"
-    }
-  },
-  "keychain": {
-    "app_id_service": "feishu-app-id:assistant",
-    "app_secret_service": "feishu-app-secret:assistant",
-    "encrypt_key_service": "feishu-encrypt-key:assistant",
-    "verification_token_service": "feishu-verification-token:assistant",
-    "bot_open_id_service": "feishu-bot-open-id:assistant"
-  }
-}
+cp config/feishu/default.example.json config/feishu/default.json
 ```
 
 ### `config/secrets/local.yaml`
 
-这一层放敏感值，例如：
+这是推荐的主配置位置，尤其是敏感项：
 
 ```yaml
-services:
-  "openai-api-key": "sk-..."
-  "feishu-app-id:assistant": "cli_xxx"
-  "feishu-app-secret:assistant": "..."
-  "feishu-encrypt-key:assistant": "..."
-  "feishu-verification-token:assistant": "..."
-  "feishu-bot-open-id:assistant": "ou_xxx"
-
 config:
   feishu:
     assistant:
+      app_id: "cli_xxx"
+      app_secret: "..."
+      encrypt_key: "..."
+      verification_token: "..."
+      bot_open_id: "ou_xxx"
+      domain: "feishu"
+      reply_mode: "codex"
+      reply_prefix: "AI 助手："
+      require_mention: true
+      require_mention_group_only: true
+      progress:
+        enabled: true
+        mode: "doc"
+        doc:
+          title_prefix: "AI 助手｜任务进度"
+          share_to_chat: true
+          link_scope: "same_tenant"
+          include_user_message: true
+          write_final_reply: true
       codex:
+        bin: "codex"
+        api_key: "sk-..."
+        model: "gpt-5.4"
+        reasoning_effort: "xhigh"
         cwd: "/absolute/path/to/workspace"
+        history_turns: 6
+        sandbox: "danger-full-access"
+        approval_policy: "never"
 ```
 
-## Keychain 可选方案
+### `config/feishu/<account>.json`
 
-如果你不想把飞书凭据写进 `local.yaml`，可以写到 macOS Keychain：
+这个文件适合放本机非敏感覆盖：
+
+```json
+{
+  "reply_mode": "codex",
+  "reply_prefix": "AI 助手：",
+  "require_mention": true,
+  "require_mention_group_only": true,
+  "progress": {
+    "enabled": true,
+    "mode": "doc",
+    "doc": {
+      "title_prefix": "AI 助手｜任务进度"
+    }
+  },
+  "codex": {
+    "cwd": "/absolute/path/to/workspace"
+  }
+}
+```
+
+### 配置建议
+
+- 密钥尽量只放 `local.yaml`
+- `config/feishu/<account>.json` 留给运行参数
+- 每个机器人单独配置 `codex.cwd`
+- 如果你已经通过 `codex login` 登录，也可以不填 `codex.api_key`
+
+## 快速验证
+
+先做 dry run：
 
 ```bash
-bash tools/save_feishu_account_keychain.sh \
-  assistant \
-  <app_id> \
-  <app_secret> \
-  <encrypt_key> \
-  <verification_token> \
-  <bot_open_id>
+node tools/feishu_ws_bot.js --account assistant --dry-run
 ```
 
-默认 Keychain account 名称是 `codex-claw`。如需改名，启动前设置：
+如果输出里看到这些关键信号，基本就通了：
 
-```bash
-export SUNCODEXCLAW_KEYCHAIN_ACCOUNT="your-keychain-account"
-```
+- `app_id_found=true`
+- `app_secret_found=true`
+- `codex_found=true`
+- `progress_mode=doc` 或你自己的配置值
+- `codex_cwd=...`
 
-## 飞书开放平台配置
+## 飞书开放平台设置
 
-### 1. 创建应用
+### 控制台入口
 
-在飞书开放平台创建一个企业自建应用，启用：
+- 控制台首页：[open.feishu.cn/app](https://open.feishu.cn/app)
+- 文档首页：[open.feishu.cn/document/home/index](https://open.feishu.cn/document/home/index)
 
-- 机器人能力
-- 事件订阅能力
-- 云文档 / 云盘能力
+### 操作路径
 
-### 2. 填写应用安全信息
+![Feishu Paths](docs/images/feishu-console-paths.svg)
 
-你需要拿到并放进配置里的值有：
+在飞书开放平台里，你至少会走这几条路径：
 
-- `App ID`
-- `App Secret`
-- `Encrypt Key`
-- `Verification Token`
-- `Bot Open ID`
+- 机器人能力：
+  - 飞书开放平台 → 应用详情 → 机器人
+- 事件订阅：
+  - 飞书开放平台 → 应用详情 → 开发配置 → 事件与回调
+- 权限配置：
+  - 飞书开放平台 → 应用详情 → 权限管理与授权 → 权限配置
 
-其中前四项在开放平台应用设置里可见，`Bot Open ID` 可以在机器人实际收到消息后的事件体里获取，也可以通过开放平台调试工具拿到。
+### 需要拿到的值
 
-### 3. 事件订阅
+你需要把这些值配进 `local.yaml` 或环境变量：
 
-当前机器人必须订阅：
+- `app_id`
+- `app_secret`
+- `encrypt_key`
+- `verification_token`
+- `bot_open_id`
+
+### 必订阅事件
 
 - `im.message.receive_v1`
 
-这是 WebSocket 模式的入口事件。没有它，机器人不会收到任何消息。
+没有这个事件，机器人就收不到消息。
 
-### 4. 权限
+### 最低建议权限
 
-#### 最低必需权限
-
-如果你只用当前这套功能，至少要保证这些能力通：
+至少建议开这些：
 
 - `im:message`
 - `im:message:readonly`
@@ -229,9 +279,10 @@ export SUNCODEXCLAW_KEYCHAIN_ACCOUNT="your-keychain-account"
 - `drive:drive.metadata:readonly`
 - `drive:drive:readonly`
 
-#### 当前项目实测使用的完整权限清单
+### 当前项目实测使用的完整权限清单
 
-下面这份是当前项目侧已经放通、并且与现有功能兼容的完整 scopes 示例：
+<details>
+<summary>展开查看完整 scopes</summary>
 
 ```json
 {
@@ -326,192 +377,167 @@ export SUNCODEXCLAW_KEYCHAIN_ACCOUNT="your-keychain-account"
 }
 ```
 
-### 5. 发布应用
+</details>
 
-完成权限和事件订阅后，需要：
+## 启动
 
-1. 发布应用版本
-2. 安装到目标租户
-3. 把机器人拉进对应群聊，或给它建立 P2P 会话
-
-## 启动与管理
-
-### 单机器人调试
-
-只做参数和凭据检查，不建连：
-
-```bash
-node tools/feishu_ws_bot.js --account assistant --dry-run
-```
-
-前台启动：
+前台跑单个账号：
 
 ```bash
 node tools/feishu_ws_bot.js --account assistant
 ```
 
-### 多机器人统一管理
-
-列出可启动账号：
+统一管理多账号：
 
 ```bash
 bash tools/feishu_bot_ctl.sh list
-```
-
-启动全部：
-
-```bash
 bash tools/feishu_bot_ctl.sh start all
-```
-
-查看状态：
-
-```bash
 bash tools/feishu_bot_ctl.sh status all
-```
-
-查看日志：
-
-```bash
 bash tools/feishu_bot_ctl.sh logs assistant --follow
-```
-
-重启单个账号：
-
-```bash
 bash tools/feishu_bot_ctl.sh restart assistant
+bash tools/feishu_bot_ctl.sh stop all
 ```
 
-### 开机自启
+## 开机自启
 
-在 macOS 上可安装 LaunchAgents：
+macOS 下可安装 LaunchAgents：
 
 ```bash
 bash tools/install_feishu_launchagents.sh install all
 ```
 
-查看 LaunchAgents 状态：
+查看状态：
 
 ```bash
 bash tools/install_feishu_launchagents.sh status all
 ```
 
-默认 launchctl label 前缀是 `com.sunbelife.suncodexclaw.feishu`。如需自定义：
+默认 label 前缀是：
+
+```text
+com.sunbelife.suncodexclaw.feishu
+```
+
+如需自定义：
 
 ```bash
 export SUNCODEXCLAW_LAUNCHCTL_PREFIX="com.example.suncodexclaw.feishu"
 ```
 
-## 消息能力说明
+## 消息能力
 
 ### 文本
 
-机器人会把消息交给本机 `codex exec --json` 处理，并保留多轮上下文。
-
-支持线程命令：
-
-- `/threads` 或 `/thread list`
-- `/thread new [名称]`
-- `/thread switch <线程ID或名称>`
-- `/thread current`
-- `/reset`
+- 支持普通文本回复
+- 支持多轮上下文
+- 支持 `/threads`、`/thread new`、`/thread switch`、`/thread current`、`/reset`
 
 ### 图片
 
-图片会先下载到本地，再作为输入传给 Codex。
+- 图片会先下载到本地
+- 再作为输入交给 Codex 分析
 
 ### 文件读取
 
-用户直接发送飞书文件消息时：
+用户发飞书文件时，机器人会：
 
-1. 机器人会把文件下载到本地临时目录
-2. 把真实临时路径写进提示词
-3. Codex 可以直接读取这个文件
-4. 回复完成后临时目录会清理
+1. 下载到本地临时目录
+2. 把临时路径写进 prompt
+3. 让 Codex 直接读取文件
+4. 回复后清理临时目录
 
 ### 文件发送
 
-Codex 如果要把本机文件发回飞书，可以在最终输出里单独占行写：
+如果 Codex 想把本机文件发回飞书，可以在输出里单独占行写：
 
 ```text
 [[FEISHU_SEND_FILE:/absolute/or/relative/path]]
 ```
 
-支持多行多个文件。机器人会：
+机器人会自动上传并回发文件。当前单文件限制是 `30 MB`。
 
-1. 解析这些隐藏指令
-2. 上传对应本地文件到飞书
-3. 以文件消息形式发回会话
+### 群聊触发
 
-当前单文件上限为 `30 MB`。
+默认是：
 
-### 群聊触发规则
+- P2P 可直接聊
+- 群里需要 `@机器人`
 
-默认规则是：
+同时支持一个很适合干活的补偿链路：
 
-- P2P 会话可直接说话
-- 群聊需要 `@机器人`
+- 同一个人先 `@机器人`
+- 2 分钟内单独发文件 / 图片 / 富文本
+- 机器人仍会把后续消息算进同一轮任务
 
-并且已经支持一个实用补偿：
+## 云文档进度
 
-- 如果同一个人在群里先 `@机器人`
-- 然后 2 分钟内单独发文件 / 图片 / 富文本
-- 机器人会把后续消息继续当作同一轮任务处理
-
-## 进度模式
-
-支持两种进度输出：
+支持两种进度模式：
 
 - `message`
-  - 进度写在飞书消息里
 - `doc`
-  - 创建飞书云文档
-  - 任务过程持续写入文档
-  - 会话里只发文档链接和最终结果
 
-云文档模式会写入：
+`doc` 模式下会：
 
-- 任务概览
-- 用户消息
-- 进度日志
-- 执行命令
-- `stdout` / `stderr`
-- 最终回复
+- 创建飞书云文档
+- 持续写入进度
+- 用标题、加粗、代码块排版
+- 把执行命令、`stdout`、`stderr`、最终回复写进去
+- 在会话里只发文档链接和最终结果
 
-命令和输出会以代码块形式写进文档。
+这套模式很适合长任务，因为聊天窗口不会被刷爆。
 
-## 常用问题
+## Skills、记忆和电脑操作
 
-### 机器人不回消息
+这个项目本身不重新发明 Skills、记忆和电脑控制，而是把 Codex 原生能力接进飞书：
 
-先检查：
+- Skills：
+  - 你的 Codex 环境能用 Skills，这个机器人就能用
+- 记忆：
+  - 每个 chat 都有线程历史
+  - 每个线程只保留有限轮，兼顾效果和 token 成本
+- 电脑操作：
+  - 通过 Codex 在本机工作区里执行
+  - 能读文件、改代码、跑命令、产出文件、把文件发回飞书
 
-- 应用是否已发布
-- 群里是否真的 `@` 到了这个 bot
-- 是否订阅了 `im.message.receive_v1`
-- `--dry-run` 是否能读到凭据
-- `logs <account> --follow` 是否收到事件
+## 常见问题
 
-### 云文档创建成功但没有链接
+### 1. 机器人不回
 
-通常是 `docx` 权限开了，但 `drive` 权限没开全。至少要补：
+优先检查：
+
+- `--dry-run` 是否能看到 `app_id_found=true`
+- 飞书应用是否已发布
+- 是否真的订阅了 `im.message.receive_v1`
+- 群里是否真正 `@` 到了这个 bot
+
+### 2. 云文档能创建，但发不出链接
+
+通常是 `docx` 已开，但 `drive` 没开全。至少补：
 
 - `drive:drive`
 - `drive:drive.metadata:readonly`
 
-### 文件无法发回飞书
+### 3. 文件回发失败
 
 检查：
 
-- 文件是否真实存在
-- 是否是普通文件而不是目录
+- 文件是否存在
+- 是否是普通文件
 - 是否超过 `30 MB`
-- 机器人账号是否有 `im:message:send_as_bot` / `im:resource`
+- 飞书权限里是否有消息发送和资源相关权限
+
+### 4. Codex 明明装了，但机器人起不来
+
+检查：
+
+- `codex --version`
+- `which codex`
+- LaunchAgents 环境里是否能拿到 `codex`
+- token 是不是已经通过 `codex` 登录或在配置里提供
 
 ## 安全建议
 
-- 不要把 `config/secrets/local.yaml` 提交到 Git
-- 不要把真实 `config/feishu/*.json` 提交到公开仓库
-- 生产环境尽量通过 Keychain 或 CI Secret 注入敏感值
-- 给每个机器人单独的 `codex.cwd`
-- 如果机器人需要更广的本机文件访问，请明确评估 `codex` 的权限边界
+- 不要提交 `config/secrets/local.yaml`
+- 不要把真实的 `config/feishu/*.json` 推到公开仓库
+- 给每个机器人单独配置 `codex.cwd`
+- 对能改代码、能操作电脑的机器人，明确评估 `sandbox` 和 `approval_policy`

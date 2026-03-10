@@ -1,10 +1,8 @@
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 const YAML = require('yaml');
 
 const DEFAULT_SECRETS_FILE = path.resolve(__dirname, '..', '..', 'config', 'secrets', 'local.yaml');
-const DEFAULT_KEYCHAIN_ACCOUNT = 'codex-claw';
 
 let cachedFilePath = '';
 let cachedMtimeMs = -1;
@@ -19,14 +17,6 @@ function resolveSecretsFile() {
     || ''
   ).trim();
   return explicit ? path.resolve(explicit) : DEFAULT_SECRETS_FILE;
-}
-
-function resolveKeychainAccount() {
-  return String(
-    process.env.SUNCODEXCLAW_KEYCHAIN_ACCOUNT
-    || process.env.CODEX_CLAW_KEYCHAIN_ACCOUNT
-    || DEFAULT_KEYCHAIN_ACCOUNT
-  ).trim() || DEFAULT_KEYCHAIN_ACCOUNT;
 }
 
 function loadLocalSecrets() {
@@ -53,13 +43,6 @@ function loadLocalSecrets() {
   cachedMtimeMs = stat.mtimeMs;
   cachedDoc = parsed;
   return { filePath, doc: parsed };
-}
-
-function normalizeSecretString(value) {
-  if (value === undefined || value === null) return '';
-  if (typeof value === 'string') return value.trim();
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  return '';
 }
 
 function asPlainObject(value) {
@@ -91,47 +74,6 @@ function deepMerge(...items) {
   return out;
 }
 
-function readKeychainSecret(service) {
-  const normalized = String(service || '').trim();
-  if (!normalized) return '';
-  const account = resolveKeychainAccount();
-  try {
-    return execSync(`security find-generic-password -a "${account}" -s "${normalized}" -w`, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-  } catch (_) {
-    return '';
-  }
-}
-
-function readYamlServiceSecret(service) {
-  const normalized = String(service || '').trim();
-  if (!normalized) return '';
-  const { doc } = loadLocalSecrets();
-  const services = doc?.services;
-  if (!services || typeof services !== 'object') return '';
-  return normalizeSecretString(services[normalized]);
-}
-
-function readServiceSecret(service) {
-  return readYamlServiceSecret(service) || readKeychainSecret(service);
-}
-
-function readLocalValue(pathSegments, fallback = undefined) {
-  const parts = Array.isArray(pathSegments) ? pathSegments : [pathSegments];
-  const { doc } = loadLocalSecrets();
-  let current = doc?.values;
-  for (const part of parts) {
-    const key = String(part || '').trim();
-    if (!key || !current || typeof current !== 'object' || !(key in current)) {
-      return fallback;
-    }
-    current = current[key];
-  }
-  return current === undefined ? fallback : current;
-}
-
 function readConfigRoot(section, fallback = undefined) {
   const key = String(section || '').trim();
   if (!key) return fallback;
@@ -140,7 +82,7 @@ function readConfigRoot(section, fallback = undefined) {
   const fromConfig = asPlainObject(configRoot[key]);
   if (Object.keys(fromConfig).length > 0) return fromConfig;
 
-  // Backward compatibility for the earlier secrets-only layout.
+  // Backward compatibility for earlier local.yaml layouts.
   const legacyValues = asPlainObject(doc?.values);
   const fromLegacy = asPlainObject(legacyValues[key]);
   if (Object.keys(fromLegacy).length > 0) return fromLegacy;
@@ -163,7 +105,6 @@ function listConfigEntryNames(section) {
 
 function normalizeSecretsDoc(doc) {
   const nextDoc = asPlainObject(cloneSerializable(doc) || {});
-  nextDoc.services = asPlainObject(nextDoc.services);
   nextDoc.config = asPlainObject(nextDoc.config);
   return nextDoc;
 }
@@ -215,10 +156,6 @@ module.exports = {
   readConfigEntry,
   readConfigRoot,
   loadLocalSecrets,
-  readKeychainSecret,
-  readLocalValue,
-  readServiceSecret,
-  readYamlServiceSecret,
   resolveSecretsFile,
   upsertConfigEntry,
   writeLocalSecrets,
