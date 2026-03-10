@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+
+# dependencies
+node_modules/
+
+# local runtime and logs
+.runtime/
+*.log
+
+# local runtime config
+config/feishu/*.json
+!config/feishu/*.example.json
+config/secrets/*.yaml
+!config/secrets/*.example.yaml

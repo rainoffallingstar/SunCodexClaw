@@ -1,0 +1,22 @@
+{
+  "name": "suncodexclaw",
+  "version": "1.0.0",
+  "description": "Feishu Codex assistant with WebSocket bot runtime, cloud-doc progress logs, image/file ingestion, and local file sending.",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "feishu:ws": "node tools/feishu_ws_bot.js --account default",
+    "feishu:ws:dry": "node tools/feishu_ws_bot.js --account default --dry-run",
+    "feishu:ctl": "bash tools/feishu_bot_ctl.sh",
+    "feishu:start": "bash tools/feishu_bot_ctl.sh start all",
+    "feishu:stop": "bash tools/feishu_bot_ctl.sh stop all",
+    "feishu:restart": "bash tools/feishu_bot_ctl.sh restart all",
+    "feishu:status": "bash tools/feishu_bot_ctl.sh status all",
+    "feishu:install-launchagents": "bash tools/install_feishu_launchagents.sh install all",
+    "feishu:launchagents:status": "bash tools/install_feishu_launchagents.sh status all"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.59.0",
+    "yaml": "^2.8.2"
+  }
+}
