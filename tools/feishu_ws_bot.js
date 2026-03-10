@@ -17,6 +17,14 @@ try {
   lark = null;
 }
 
+let ffmpegStatic = '';
+try {
+  // eslint-disable-next-line global-require
+  ffmpegStatic = require('ffmpeg-static') || '';
+} catch (_) {
+  ffmpegStatic = '';
+}
+
 const DEFAULT_CODEX_SYSTEM_PROMPT = [
   '你是“飞书 Codex 助手”，通过飞书和用户交流。',
   '请直接回答用户问题，不要复述用户原话。',
@@ -27,7 +35,9 @@ const DEFAULT_CODEX_SYSTEM_PROMPT = [
 const MAX_IMAGE_INPUTS = 6;
 const FEISHU_TEXT_CHUNK_LIMIT = 4000;
 const FEISHU_FILE_UPLOAD_LIMIT = 30 * 1024 * 1024;
+const FEISHU_IMAGE_UPLOAD_LIMIT = 10 * 1024 * 1024;
 const FEISHU_SEND_FILE_DIRECTIVE_PREFIX = '[[FEISHU_SEND_FILE:';
+const FEISHU_SEND_IMAGE_DIRECTIVE_PREFIX = '[[FEISHU_SEND_IMAGE:';
 const FEISHU_GROUP_MENTION_CARRY_WINDOW_MS = 2 * 60 * 1000;
 const FEISHU_DOCX_TEXT_BLOCK_TYPE = 2;
 const FEISHU_DOCX_HEADING2_BLOCK_TYPE = 4;
@@ -37,6 +47,27 @@ const VALID_CODEX_SANDBOXES = new Set(['read-only', 'workspace-write', 'danger-f
 const VALID_CODEX_APPROVAL_POLICIES = new Set(['untrusted', 'on-failure', 'on-request', 'never']);
 const VALID_PROGRESS_MODES = new Set(['message', 'doc']);
 const VALID_PROGRESS_DOC_LINK_SCOPES = new Set(['same_tenant', 'anyone', 'closed']);
+const IMAGE_FILE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.tif', '.tiff', '.bmp', '.ico']);
+const TRANSCRIPTION_MIME_BY_EXTENSION = new Map([
+  ['.mp3', 'audio/mpeg'],
+  ['.mp4', 'audio/mp4'],
+  ['.mpeg', 'audio/mpeg'],
+  ['.mpga', 'audio/mpeg'],
+  ['.m4a', 'audio/mp4'],
+  ['.wav', 'audio/wav'],
+  ['.webm', 'audio/webm'],
+]);
+const CONTENT_TYPE_EXTENSION_MAP = new Map([
+  ['audio/mpeg', '.mp3'],
+  ['audio/mp3', '.mp3'],
+  ['audio/mp4', '.m4a'],
+  ['audio/wav', '.wav'],
+  ['audio/x-wav', '.wav'],
+  ['audio/webm', '.webm'],
+  ['audio/ogg', '.ogg'],
+  ['audio/opus', '.opus'],
+  ['application/ogg', '.ogg'],
+]);
 
 function getArg(flag, fallback = '') {
   const idx = process.argv.indexOf(flag);
@@ -366,15 +397,91 @@ function resolveCodexConfig(config) {
   };
 }
 
-function detectCodex(bin) {
+function detectBinary(bin, versionArgs = ['-version']) {
+  const raw = String(bin || '').trim();
+  if (!raw) return { found: false, version: '' };
   try {
-    const run = spawnSync(bin, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const run = spawnSync(raw, versionArgs, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     if (run.status !== 0) return { found: false, version: '' };
     const version = String(run.stdout || run.stderr || '').trim().split(/\r?\n/)[0] || '';
     return { found: true, version };
   } catch (_) {
     return { found: false, version: '' };
   }
+}
+
+function resolveFfmpegConfig(config) {
+  const speechConfig = config.speech || {};
+  const candidates = uniqueStrings([
+    getArg('--speech-ffmpeg-bin', ''),
+    process.env.FEISHU_SPEECH_FFMPEG_BIN || '',
+    speechConfig.ffmpeg_bin || '',
+    ffmpegStatic || '',
+    'ffmpeg',
+  ]);
+
+  for (const bin of candidates) {
+    const detected = detectBinary(bin);
+    if (detected.found) {
+      return {
+        bin,
+        version: detected.version,
+      };
+    }
+  }
+
+  return {
+    bin: '',
+    version: '',
+  };
+}
+
+function resolveSpeechConfig(config, codex = {}) {
+  const speechConfig = config.speech || {};
+  const apiKey = pickValue([
+    ['cli', getArg('--speech-api-key', '')],
+    ['env', process.env.FEISHU_SPEECH_API_KEY || ''],
+    ['config', speechConfig.api_key || ''],
+    ['env_openai', process.env.OPENAI_API_KEY || ''],
+    ['env_codex', process.env.CODEX_API_KEY || ''],
+    [codex.apiKeySource || 'codex', codex.apiKey || ''],
+  ]);
+  const ffmpeg = resolveFfmpegConfig(config);
+  const baseURL = String(
+    getArg(
+      '--speech-base-url',
+      process.env.FEISHU_SPEECH_BASE_URL
+        || process.env.OPENAI_BASE_URL
+        || process.env.OPENAI_API_BASE
+        || speechConfig.base_url
+        || 'https://api.openai.com/v1'
+    )
+  ).trim().replace(/\/+$/, '') || 'https://api.openai.com/v1';
+
+  return {
+    enabled: asBool(getArg('--speech-enabled', process.env.FEISHU_SPEECH_ENABLED || speechConfig.enabled), true),
+    model: String(
+      getArg(
+        '--speech-model',
+        process.env.FEISHU_SPEECH_MODEL || speechConfig.model || 'gpt-4o-mini-transcribe'
+      )
+    ).trim() || 'gpt-4o-mini-transcribe',
+    language: String(
+      getArg(
+        '--speech-language',
+        process.env.FEISHU_SPEECH_LANGUAGE || speechConfig.language || ''
+      )
+    ).trim(),
+    apiKey: apiKey.value,
+    apiKeySource: apiKey.source,
+    baseURL,
+    ffmpegBin: ffmpeg.bin,
+    ffmpegVersion: ffmpeg.version,
+  };
+}
+
+function detectCodex(bin) {
+  return detectBinary(bin, ['--version']);
 }
 
 function parseMessageText(rawContent) {
@@ -443,6 +550,40 @@ function parseFileMessageContent(rawContent) {
   }
 }
 
+function parseAudioMessageContent(rawContent) {
+  const content = String(rawContent || '').trim();
+  if (!content) return { fileKey: '', durationMs: 0 };
+  try {
+    const parsed = JSON.parse(content);
+    const fileKey = String(
+      parsed?.file_key
+      || parsed?.fileKey
+      || parsed?.audio_key
+      || parsed?.audioKey
+      || parsed?.audio?.file_key
+      || parsed?.audio?.fileKey
+      || parsed?.audio?.audio_key
+      || parsed?.audio?.audioKey
+      || ''
+    ).trim();
+    const rawDuration = Number(
+      parsed?.duration
+      || parsed?.duration_ms
+      || parsed?.durationMs
+      || parsed?.audio?.duration
+      || parsed?.audio?.duration_ms
+      || parsed?.audio?.durationMs
+      || 0
+    );
+    return {
+      fileKey,
+      durationMs: Number.isFinite(rawDuration) ? rawDuration : 0,
+    };
+  } catch (_) {
+    return { fileKey: '', durationMs: 0 };
+  }
+}
+
 function uniqueStrings(items = []) {
   const out = [];
   const seen = new Set();
@@ -457,6 +598,11 @@ function uniqueStrings(items = []) {
 
 function escapeRegExp(rawText) {
   return String(rawText || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isImageFilePath(filePath) {
+  const ext = path.extname(String(filePath || '')).trim().toLowerCase();
+  return IMAGE_FILE_EXTENSIONS.has(ext);
 }
 
 function normalizeAliasText(rawText) {
@@ -1119,48 +1265,276 @@ function resolveLocalFilePath(rawFilePath, cwd = '') {
   return path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(cwd || process.cwd(), raw);
 }
 
-function extractFeishuSendFileDirectives(rawText) {
+function extractFeishuAttachmentDirectives(rawText) {
   const lines = String(rawText || '').replace(/\r/g, '').split('\n');
-  const filePaths = [];
+  const attachments = [];
   const keptLines = [];
+  const seen = new Set();
 
   for (const line of lines) {
     const trimmed = line.trim();
-    if (
-      trimmed.startsWith(FEISHU_SEND_FILE_DIRECTIVE_PREFIX)
-      && trimmed.endsWith(']]')
-    ) {
-      const payload = trimmed.slice(FEISHU_SEND_FILE_DIRECTIVE_PREFIX.length, -2).trim();
-      if (payload) filePaths.push(payload);
-      continue;
+    if (trimmed.endsWith(']]')) {
+      if (trimmed.startsWith(FEISHU_SEND_FILE_DIRECTIVE_PREFIX)) {
+        const payload = trimmed.slice(FEISHU_SEND_FILE_DIRECTIVE_PREFIX.length, -2).trim();
+        const dedupeKey = `file:${payload}`;
+        if (payload && !seen.has(dedupeKey)) {
+          seen.add(dedupeKey);
+          attachments.push({ type: 'file', path: payload });
+        }
+        continue;
+      }
+      if (trimmed.startsWith(FEISHU_SEND_IMAGE_DIRECTIVE_PREFIX)) {
+        const payload = trimmed.slice(FEISHU_SEND_IMAGE_DIRECTIVE_PREFIX.length, -2).trim();
+        const dedupeKey = `image:${payload}`;
+        if (payload && !seen.has(dedupeKey)) {
+          seen.add(dedupeKey);
+          attachments.push({ type: 'image', path: payload });
+        }
+        continue;
+      }
     }
     keptLines.push(line);
   }
 
   return {
     text: keptLines.join('\n').replace(/\n{3,}/g, '\n\n').trim(),
-    filePaths: uniqueStrings(filePaths),
+    attachments,
   };
 }
 
-function buildFileSendResultText(sent = [], failed = []) {
+function buildAttachmentSendResultText(sent = [], failed = []) {
   const lines = [];
-  if (sent.length > 0) {
-    lines.push(`[已发送文件] ${sent.map((item) => item.fileName).join('，')}`);
+  const sentImages = sent.filter((item) => item.type === 'image');
+  const sentFiles = sent.filter((item) => item.type === 'file');
+  if (sentImages.length > 0) {
+    lines.push(`[已发送图片] ${sentImages.map((item) => item.fileName).join('，')}`);
+  }
+  if (sentFiles.length > 0) {
+    lines.push(`[已发送文件] ${sentFiles.map((item) => item.fileName).join('，')}`);
   }
   if (failed.length > 0) {
-    lines.push(`[文件发送失败] ${failed.map((item) => `${item.fileName}：${item.error}`).join('；')}`);
+    lines.push(`[附件发送失败] ${failed.map((item) => `${item.fileName}：${item.error}`).join('；')}`);
   }
   return lines.join('\n').trim();
 }
 
-function buildFileSendFailureReply(sent = [], failed = []) {
+function buildAttachmentSendFailureReply(sent = [], failed = []) {
   if (failed.length === 0) return '';
   const details = failed.map((item) => `${item.fileName}（${item.error}）`).join('；');
-  if (sent.length === 0) {
-    return compactText(`文件发送失败：${details}`, FEISHU_TEXT_CHUNK_LIMIT);
+  const sentCount = sent.length;
+  if (sentCount === 0) {
+    return compactText(`附件发送失败：${details}`, FEISHU_TEXT_CHUNK_LIMIT);
   }
-  return compactText(`已发送 ${sent.length} 个文件；以下文件发送失败：${details}`, FEISHU_TEXT_CHUNK_LIMIT);
+  return compactText(`已发送 ${sentCount} 个附件；以下附件发送失败：${details}`, FEISHU_TEXT_CHUNK_LIMIT);
+}
+
+function buildDefaultAttachmentReply(attachments = []) {
+  const imageCount = attachments.filter((item) => item.type === 'image').length;
+  const fileCount = attachments.filter((item) => item.type === 'file').length;
+  if (imageCount > 0 && fileCount === 0) return '图片已发送，请查收。';
+  if (fileCount > 0 && imageCount === 0) return '文件已发送，请查收。';
+  if (imageCount > 0 || fileCount > 0) return '附件已发送，请查收。';
+  return '';
+}
+
+function getHeaderValue(headers, targetKey) {
+  const wanted = String(targetKey || '').trim().toLowerCase();
+  if (!headers || !wanted) return '';
+  if (typeof headers.get === 'function') {
+    return String(headers.get(targetKey) || headers.get(wanted) || '').trim();
+  }
+  if (typeof headers === 'object') {
+    for (const [key, value] of Object.entries(headers)) {
+      if (String(key).trim().toLowerCase() !== wanted) continue;
+      if (Array.isArray(value)) return String(value[0] || '').trim();
+      return String(value || '').trim();
+    }
+  }
+  return '';
+}
+
+function parseDispositionFileName(disposition = '') {
+  const raw = String(disposition || '').trim();
+  if (!raw) return '';
+  const utf8Match = raw.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match && utf8Match[1]) {
+    try {
+      return sanitizeLocalFileName(decodeURIComponent(utf8Match[1]));
+    } catch (_) {
+      return sanitizeLocalFileName(utf8Match[1]);
+    }
+  }
+  const plainMatch = raw.match(/filename="?([^";]+)"?/i);
+  if (plainMatch && plainMatch[1]) {
+    return sanitizeLocalFileName(plainMatch[1]);
+  }
+  return '';
+}
+
+function inferExtensionFromHeaders(headers, fallback = '.bin') {
+  const contentType = getHeaderValue(headers, 'content-type').split(';')[0].trim().toLowerCase();
+  if (contentType && CONTENT_TYPE_EXTENSION_MAP.has(contentType)) {
+    return CONTENT_TYPE_EXTENSION_MAP.get(contentType);
+  }
+  const dispositionName = parseDispositionFileName(getHeaderValue(headers, 'content-disposition'));
+  const ext = path.extname(dispositionName || '').trim().toLowerCase();
+  return ext || fallback;
+}
+
+function formatDurationFromMs(durationMs) {
+  const ms = Math.max(0, Number(durationMs) || 0);
+  if (ms <= 0) return '';
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds} 秒`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (seconds === 0) return `${minutes} 分钟`;
+  return `${minutes} 分 ${seconds} 秒`;
+}
+
+async function convertAudioToWav(ffmpegBin, inputPath, outputPath) {
+  ensure(ffmpegBin, 'ffmpeg not configured');
+  return new Promise((resolve, reject) => {
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-y',
+      '-i',
+      inputPath,
+      '-vn',
+      '-ac',
+      '1',
+      '-ar',
+      '16000',
+      outputPath,
+    ];
+    const child = spawn(ffmpegBin, args, {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk || '');
+    });
+    child.on('error', (err) => {
+      reject(new Error(`ffmpeg failed to start: ${err.message}`));
+    });
+    child.on('close', (code) => {
+      if (code === 0 && fs.existsSync(outputPath)) {
+        resolve(outputPath);
+        return;
+      }
+      reject(new Error(`ffmpeg exited with code ${code || 0}${stderr.trim() ? `: ${stderr.trim()}` : ''}`));
+    });
+  });
+}
+
+async function ensureAudioReadyForTranscription(filePath, speech) {
+  const rawPath = path.resolve(String(filePath || ''));
+  ensure(fs.existsSync(rawPath), `audio file not found: ${rawPath}`);
+  const ext = path.extname(rawPath).trim().toLowerCase();
+  const knownMime = TRANSCRIPTION_MIME_BY_EXTENSION.get(ext);
+  if (knownMime) {
+    return { filePath: rawPath, mimeType: knownMime, converted: false };
+  }
+
+  ensure(
+    speech.ffmpegBin,
+    `语音消息当前格式 ${ext || '(unknown)'} 需要先转成 wav，但没有可用的 ffmpeg`
+  );
+  const outputPath = path.join(
+    path.dirname(rawPath),
+    `${path.basename(rawPath, path.extname(rawPath)) || 'voice'}-transcribe.wav`
+  );
+  await convertAudioToWav(speech.ffmpegBin, rawPath, outputPath);
+  return {
+    filePath: outputPath,
+    mimeType: 'audio/wav',
+    converted: true,
+  };
+}
+
+async function requestOpenAITranscription({ speech, model, filePath, mimeType }) {
+  ensure(speech.apiKey, 'speech api key is missing');
+  const audioBuffer = fs.readFileSync(filePath);
+  const form = new FormData();
+  form.set('model', model);
+  form.set('response_format', 'json');
+  if (speech.language) {
+    form.set('language', speech.language);
+  }
+  form.set('file', new Blob([audioBuffer], { type: mimeType || 'application/octet-stream' }), path.basename(filePath));
+
+  const response = await fetch(`${speech.baseURL}/audio/transcriptions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${speech.apiKey}`,
+    },
+    body: form,
+  });
+  const raw = await response.text();
+  let parsed = null;
+  try {
+    parsed = raw ? JSON.parse(raw) : null;
+  } catch (_) {
+    parsed = null;
+  }
+
+  if (!response.ok) {
+    const detail = String(
+      parsed?.error?.message
+      || parsed?.message
+      || raw
+      || `HTTP ${response.status}`
+    ).trim();
+    const err = new Error(`audio transcription failed (${response.status}): ${detail}`);
+    err.status = response.status;
+    err.code = parsed?.error?.code || '';
+    throw err;
+  }
+
+  const text = String(parsed?.text || raw || '').trim();
+  ensure(text, 'audio transcription returned empty text');
+  return text;
+}
+
+function shouldRetryTranscriptionWithFallbackModel(err) {
+  const status = Number(err?.status || 0);
+  const message = String(err?.message || '').toLowerCase();
+  if (status === 404) return true;
+  return /model/.test(message) && (/not found/.test(message) || /does not exist/.test(message) || /unsupported/.test(message));
+}
+
+async function transcribeAudioMessage(filePath, speech) {
+  ensure(speech.enabled, '当前账号未启用语音转写');
+  ensure(speech.apiKey, '缺少语音转写 API key，请配置 speech.api_key 或 codex.api_key');
+  const prepared = await ensureAudioReadyForTranscription(filePath, speech);
+  const modelCandidates = uniqueStrings([speech.model, 'whisper-1']);
+  let lastError = null;
+
+  for (const model of modelCandidates) {
+    try {
+      const text = await requestOpenAITranscription({
+        speech,
+        model,
+        filePath: prepared.filePath,
+        mimeType: prepared.mimeType,
+      });
+      return {
+        text,
+        model,
+        converted: prepared.converted,
+        preparedFilePath: prepared.filePath,
+      };
+    } catch (err) {
+      lastError = err;
+      if (model === 'whisper-1' || !shouldRetryTranscriptionWithFallbackModel(err)) {
+        break;
+      }
+    }
+  }
+
+  throw lastError || new Error('audio transcription failed');
 }
 
 function formatProgressTimestamp(value = Date.now()) {
@@ -1606,8 +1980,10 @@ function buildCodexPrompt({ systemPrompt, history, userText, imageCount = 0, cwd
   lines.push('');
   lines.push('请直接输出给用户的最终回复正文，不要加“好的/收到”等空话，不要复述用户原文。');
   lines.push('禁止输出“稍后回复/几分钟后回复/晚点再回复”这类承诺。无法完成就直接说明卡点和下一步。');
+  lines.push(`如果你需要机器人把本机图片直接发给用户，请在回复中单独占行输出：${FEISHU_SEND_IMAGE_DIRECTIVE_PREFIX}/绝对或相对路径]]`);
   lines.push(`如果你需要机器人把本机文件直接发给用户，请在回复中单独占行输出：${FEISHU_SEND_FILE_DIRECTIVE_PREFIX}/绝对或相对路径]]`);
-  lines.push('可以输出多行，每行一个文件。除这些指令外，其他文字都会作为正常回复发送给用户。');
+  lines.push('可以输出多行，每行一个附件。除这些指令外，其他文字都会作为正常回复发送给用户。');
+  lines.push(`发送图片前请确认文件真实存在、格式受支持，且大小不超过 ${formatBytes(FEISHU_IMAGE_UPLOAD_LIMIT)}。`);
   lines.push(`发送文件前请确认文件真实存在、不是目录，且大小不超过 ${formatBytes(FEISHU_FILE_UPLOAD_LIMIT)}。`);
   lines.push('如果用户发送了文件，消息正文里会给出本地临时文件路径；需要时请直接读取该文件。');
   return lines.join('\n');
@@ -1783,6 +2159,19 @@ async function sendFileReply(client, chatID, fileKey) {
   });
 }
 
+async function sendImageReply(client, chatID, imageKey) {
+  return client.im.v1.message.create({
+    params: {
+      receive_id_type: 'chat_id',
+    },
+    data: {
+      receive_id: chatID,
+      content: JSON.stringify({ image_key: imageKey }),
+      msg_type: 'image',
+    },
+  });
+}
+
 async function uploadLocalFileToFeishu(client, localPath) {
   const resolvedPath = path.resolve(String(localPath || ''));
   ensure(fs.existsSync(resolvedPath), `file not found: ${resolvedPath}`);
@@ -1808,24 +2197,87 @@ async function uploadLocalFileToFeishu(client, localPath) {
   };
 }
 
-async function sendRequestedFiles(client, chatID, filePaths = [], cwd = '') {
+async function uploadLocalImageToFeishu(client, localPath) {
+  const resolvedPath = path.resolve(String(localPath || ''));
+  ensure(fs.existsSync(resolvedPath), `file not found: ${resolvedPath}`);
+  const stat = fs.statSync(resolvedPath);
+  ensure(stat.isFile(), `not a file: ${resolvedPath}`);
+  ensure(stat.size > 0, `file is empty: ${path.basename(resolvedPath)}`);
+  ensure(stat.size <= FEISHU_IMAGE_UPLOAD_LIMIT, `image too large: ${path.basename(resolvedPath)} (${formatBytes(stat.size)} > ${formatBytes(FEISHU_IMAGE_UPLOAD_LIMIT)})`);
+  ensure(isImageFilePath(resolvedPath), `unsupported image extension: ${path.extname(resolvedPath) || '(none)'}`);
+
+  const uploaded = await client.im.v1.image.create({
+    data: {
+      image_type: 'message',
+      image: fs.createReadStream(resolvedPath),
+    },
+  });
+  const imageKey = String(uploaded?.image_key || '').trim();
+  ensure(imageKey, `upload returned empty image_key: ${resolvedPath}`);
+  return {
+    imageKey,
+    fileName: sanitizeLocalFileName(path.basename(resolvedPath)),
+    localPath: resolvedPath,
+    size: stat.size,
+  };
+}
+
+async function sendRequestedAttachments(client, chatID, attachments = [], cwd = '') {
   const sent = [];
   const failed = [];
 
-  for (const rawFilePath of filePaths || []) {
-    const resolvedPath = resolveLocalFilePath(rawFilePath, cwd);
-    const fileName = sanitizeLocalFileName(path.basename(resolvedPath || rawFilePath || 'attachment.bin'));
+  for (const attachment of attachments || []) {
+    const requestedType = attachment?.type === 'image' ? 'image' : 'file';
+    const rawPath = attachment?.path || '';
+    const resolvedPath = resolveLocalFilePath(rawPath, cwd);
+    const fileName = sanitizeLocalFileName(path.basename(resolvedPath || rawPath || 'attachment.bin'));
     if (!resolvedPath) {
-      failed.push({ fileName, error: '路径为空' });
+      failed.push({ type: requestedType, fileName, error: '路径为空' });
       continue;
     }
+
+    if (requestedType === 'image') {
+      try {
+        const uploaded = await uploadLocalImageToFeishu(client, resolvedPath);
+        await sendImageReply(client, chatID, uploaded.imageKey);
+        sent.push({
+          ...uploaded,
+          type: 'image',
+        });
+        continue;
+      } catch (imageErr) {
+        console.error(`reply_image=error path=${resolvedPath} message=${imageErr.message}`);
+        try {
+          const uploaded = await uploadLocalFileToFeishu(client, resolvedPath);
+          await sendFileReply(client, chatID, uploaded.fileKey);
+          sent.push({
+            ...uploaded,
+            type: 'file',
+          });
+          continue;
+        } catch (fileErr) {
+          console.error(`reply_image_fallback_file=error path=${resolvedPath} message=${fileErr.message}`);
+          failed.push({
+            type: requestedType,
+            fileName,
+            localPath: resolvedPath,
+            error: `${imageErr.message}; 回退文件发送也失败：${fileErr.message}`,
+          });
+          continue;
+        }
+      }
+    }
+
     try {
       const uploaded = await uploadLocalFileToFeishu(client, resolvedPath);
       await sendFileReply(client, chatID, uploaded.fileKey);
-      sent.push(uploaded);
+      sent.push({
+        ...uploaded,
+        type: 'file',
+      });
     } catch (err) {
       console.error(`reply_file=error path=${resolvedPath} message=${err.message}`);
-      failed.push({ fileName, localPath: resolvedPath, error: err.message });
+      failed.push({ type: requestedType, fileName, localPath: resolvedPath, error: err.message });
     }
   }
 
@@ -2558,6 +3010,26 @@ async function downloadFileToTempFile(client, messageID, fileKey, fileName = '')
   return { tempDir, filePath, fileName: safeName };
 }
 
+async function downloadAudioToTempFile(client, messageID, fileKey) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'feishu-audio-'));
+  const resource = await client.im.v1.messageResource.get({
+    params: {
+      type: 'audio',
+    },
+    path: {
+      message_id: messageID,
+      file_key: fileKey,
+    },
+  });
+  const ext = inferExtensionFromHeaders(resource.headers, '.opus');
+  const filePath = path.join(
+    tempDir,
+    `voice-${Date.now()}-${Math.random().toString(16).slice(2)}${ext}`
+  );
+  await resource.writeFile(filePath);
+  return { tempDir, filePath, extension: ext };
+}
+
 async function sendTextReplyWithFakeStream(client, chatID, text, fakeStream) {
   const finalText = String(text || '').trim();
   if (!finalText) return;
@@ -2662,6 +3134,7 @@ async function main() {
 
   const creds = resolveCredentials(config);
   const codex = resolveCodexConfig(config);
+  const speech = resolveSpeechConfig(config, codex);
   const codexDetect = detectCodex(codex.bin);
   const mentionAliases = resolveMentionAliases({
     explicitAliases: config.mention_aliases,
@@ -2721,6 +3194,14 @@ async function main() {
     console.log(`codex_approval_policy=${codex.approvalPolicy}`);
     console.log(`codex_timeout_sec=${codex.timeoutSec || '(disabled)'}`);
     console.log(`codex_history_turns=${codex.historyTurns}`);
+    console.log(`speech_enabled=${speech.enabled ? 'true' : 'false'}`);
+    console.log(`speech_api_key_found=${speech.apiKey ? 'true' : 'false'}`);
+    if (speech.apiKeySource) console.log(`speech_api_key_source=${speech.apiKeySource}`);
+    console.log(`speech_model=${speech.model}`);
+    console.log(`speech_language=${speech.language || '(auto)'}`);
+    console.log(`speech_base_url=${speech.baseURL}`);
+    console.log(`speech_ffmpeg_bin=${speech.ffmpegBin || '(not found)'}`);
+    if (speech.ffmpegVersion) console.log(`speech_ffmpeg_version=${speech.ffmpegVersion}`);
     return;
   }
 
@@ -2757,6 +3238,7 @@ async function main() {
     const botMentioned = isBotMentioned(mentions, creds.botOpenId.value);
     const parsedText = messageType === 'text' ? parseMessageText(message.content || '') : '';
     const parsedFile = messageType === 'file' ? parseFileMessageContent(message.content || '') : { fileKey: '', fileName: '', fileSize: 0 };
+    const parsedAudio = messageType === 'audio' ? parseAudioMessageContent(message.content || '') : { fileKey: '', durationMs: 0 };
     const parsedPost = messageType === 'post' ? parsePostContent(message.content || '') : { text: '', imageKeys: [] };
     const normalizedMessageText = messageType === 'post' ? parsedPost.text : parsedText;
     const textMentionAlias = detectTextualBotMention(normalizedMessageText, mentionAliases);
@@ -2778,7 +3260,7 @@ async function main() {
       ? getRecentMentionState(recentMentionedSenders, chatID, senderOpenID, now)
       : null;
     const mentionMatchedByCarry = Boolean(
-      recentMentionState && (messageType === 'file' || messageType === 'image' || messageType === 'post')
+      recentMentionState && (messageType === 'file' || messageType === 'image' || messageType === 'post' || messageType === 'audio')
     );
 
     console.log('FEISHU_EVENT');
@@ -2811,7 +3293,7 @@ async function main() {
       console.log('skip_reason=auto_reply_disabled');
       return;
     }
-    if (messageType !== 'text' && messageType !== 'image' && messageType !== 'post' && messageType !== 'file') {
+    if (messageType !== 'text' && messageType !== 'image' && messageType !== 'post' && messageType !== 'file' && messageType !== 'audio') {
       console.log('skip_reason=unsupported_message_type');
       return;
     }
@@ -2868,6 +3350,49 @@ async function main() {
       historyUserText = incomingText
         ? `[文件消息] ${file.fileName} + 文本：${incomingText}`
         : `[文件消息] ${file.fileName}`;
+    } else if (messageType === 'audio') {
+      if (!parsedAudio.fileKey) {
+        console.log('skip_reason=missing_audio_key');
+        await sendTextReplySafe(client, chatID, '语音接收失败，请重新发送。', 'audio_download_reply');
+        return;
+      }
+
+      let downloadedAudio = null;
+      try {
+        downloadedAudio = await downloadAudioToTempFile(client, messageID, parsedAudio.fileKey);
+        tempPathsToCleanup.push(downloadedAudio.tempDir);
+      } catch (err) {
+        console.error(`audio_download=error key=${parsedAudio.fileKey} message=${err.message}`);
+        await sendTextReplySafe(client, chatID, '语音下载失败，请稍后重试。', 'audio_download_reply');
+        return;
+      }
+
+      let transcript = null;
+      try {
+        transcript = await transcribeAudioMessage(downloadedAudio.filePath, speech);
+      } catch (err) {
+        console.error(`audio_transcription=error path=${downloadedAudio.filePath} message=${err.message}`);
+        const missingFfmpeg = !speech.ffmpegBin
+          && /ffmpeg/i.test(String(err.message || ''));
+        const detail = missingFfmpeg
+          ? '当前环境缺少语音转码能力，请保留 bundled ffmpeg-static 或安装 ffmpeg 后重试。'
+          : '语音转写失败，请检查 speech.api_key / 网络后重试。';
+        await sendTextReplySafe(client, chatID, detail, 'audio_transcription_reply');
+        return;
+      }
+
+      const durationText = formatDurationFromMs(parsedAudio.durationMs);
+      const voiceLines = [];
+      if (durationText) voiceLines.push(`用户发送了 1 条语音消息，时长约 ${durationText}。`);
+      else voiceLines.push('用户发送了 1 条语音消息。');
+      voiceLines.push('下面是语音转写结果（可能存在少量识别误差）：');
+      voiceLines.push(transcript.text);
+      voiceLines.push('请基于语音内容直接回答用户。');
+      userText = voiceLines.join('\n');
+      historyUserText = compactText(
+        `[语音消息${durationText ? ` ${durationText}` : ''}] ${transcript.text}`,
+        4000
+      );
     } else if (normalizedImageKeys.length === 0) {
       userText = incomingText;
       if (!userText) {
@@ -2992,23 +3517,26 @@ async function main() {
       }
       const codexRawReply = String(replyText || '').replace(/\r/g, '');
       if (replyMode === 'codex') {
-        const attachmentPlan = extractFeishuSendFileDirectives(codexRawReply);
+        const attachmentPlan = extractFeishuAttachmentDirectives(codexRawReply);
         let userReplyText = attachmentPlan.text;
-        if (!userReplyText && attachmentPlan.filePaths.length > 0) {
-          userReplyText = '文件已发送，请查收。';
-        }
-        if (!userReplyText.trim() && attachmentPlan.filePaths.length === 0) {
+        if (!userReplyText.trim() && attachmentPlan.attachments.length === 0) {
           throw new Error('codex returned empty reply');
         }
         if (userReplyText) {
           await sendCodexReplyPassthrough(client, chatID, userReplyText);
         }
-        const fileSendResult = await sendRequestedFiles(client, chatID, attachmentPlan.filePaths, codex.cwd || process.cwd());
-        const fileFailureReply = buildFileSendFailureReply(fileSendResult.sent, fileSendResult.failed);
-        if (fileFailureReply) {
-          await sendTextReplySafe(client, chatID, fileFailureReply, 'reply_file_notice');
+        const attachmentSendResult = await sendRequestedAttachments(client, chatID, attachmentPlan.attachments, codex.cwd || process.cwd());
+        if (!userReplyText && attachmentSendResult.sent.length > 0) {
+          userReplyText = buildDefaultAttachmentReply(attachmentSendResult.sent);
+          if (userReplyText) {
+            await sendCodexReplyPassthrough(client, chatID, userReplyText);
+          }
         }
-        const finalReplyForLog = [userReplyText, buildFileSendResultText(fileSendResult.sent, fileSendResult.failed)]
+        const attachmentFailureReply = buildAttachmentSendFailureReply(attachmentSendResult.sent, attachmentSendResult.failed);
+        if (attachmentFailureReply) {
+          await sendTextReplySafe(client, chatID, attachmentFailureReply, 'reply_attachment_notice');
+        }
+        const finalReplyForLog = [userReplyText, buildAttachmentSendResultText(attachmentSendResult.sent, attachmentSendResult.failed)]
           .filter(Boolean)
           .join('\n')
           .trim();
@@ -3130,6 +3658,14 @@ async function main() {
     console.log(`codex_timeout_sec=${codex.timeoutSec || '(disabled)'}`);
     console.log(`codex_history_turns=${codex.historyTurns}`);
   }
+  console.log(`speech_enabled=${speech.enabled ? 'true' : 'false'}`);
+  console.log(`speech_model=${speech.model}`);
+  console.log(`speech_language=${speech.language || '(auto)'}`);
+  console.log(`speech_base_url=${speech.baseURL}`);
+  console.log(`speech_api_key_found=${speech.apiKey ? 'true' : 'false'}`);
+  if (speech.apiKeySource) console.log(`speech_api_key_source=${speech.apiKeySource}`);
+  console.log(`speech_ffmpeg_bin=${speech.ffmpegBin || '(not found)'}`);
+  if (speech.ffmpegVersion) console.log(`speech_ffmpeg_version=${speech.ffmpegVersion}`);
 }
 
 main().catch((err) => {

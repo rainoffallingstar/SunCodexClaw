@@ -33,5 +33,13 @@
     "timeout_sec": 0,
     "history_turns": 6,
     "system_prompt": "你是“飞书 Codex 助手”，通过飞书和用户交流。请直接回答用户问题，不要复述用户原话。"
+  },
+  "speech": {
+    "enabled": true,
+    "api_key": "",
+    "model": "gpt-4o-mini-transcribe",
+    "language": "",
+    "base_url": "https://api.openai.com/v1",
+    "ffmpeg_bin": ""
   }
 }
