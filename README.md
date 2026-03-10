@@ -6,6 +6,33 @@
 
 ![Quick Start](docs/images/quickstart-terminal.svg)
 
+## 一句话
+
+我自己写了一个 Codex 版本的 OpenClaw：`SunCodexClaw`。
+
+名字是这么宣传的，但这里只是功能和概念方向和 OpenClaw 比较接近，没有借鉴 OpenClaw 的代码。
+
+它主要解决了这些问题：
+
+1. 浪费 Token 的问题：这个项目说多少就费多少，不浪费。
+2. 稳定性差的问题：没有额外网关，直接运行，不会动不动就崩。
+3. 只能陪聊、不干活的问题：它直接连的是 `Codex CLI`，可以写代码、改项目、干真活。
+4. 多 Agent 协作的问题：支持多个机器人一起干活，互相独立进程、独立路径、互不干扰。
+5. 记忆和扩展的问题：它本身就有记忆，也支持 Skills，因为底层就是 Codex。
+6. 飞书反馈体验的问题：收到消息会马上回复，不会装死；推送文档里会持续告诉你实时进展，比流式靠谱，也比腹泻式回复靠谱。
+7. 飞书附件能力的问题：支持图片、文件的输入和输出，也可以把你发来的文件落到电脑上处理。
+8. 电脑操作能力的问题：因为底层是 Codex，所以支持直接操作你的电脑；在 GPT 5.4 下，这类操作的准确度也明显更高。
+
+我最近一段时间都是用它干活。
+
+一顿饭下来，我的网页可以改好几版。
+
+## 用起来如图
+
+![SunCodexClaw Example 1](https://wx4.sinaimg.cn/mw2000/63dcee2bgy1iazf3yyq1vj21qg1ww4hj.jpg)
+![SunCodexClaw Example 2](https://wx2.sinaimg.cn/mw2000/63dcee2bgy1iazf3zfejej21qg1wwwyy.jpg)
+![SunCodexClaw Example 3](https://wx3.sinaimg.cn/mw2000/63dcee2bgy1iazf3zy9wuj21qg1wwtsa.jpg)
+
 ## 这是什么
 
 项目核心是：
@@ -14,7 +41,7 @@
 - 按账号把消息路由到对应的 `codex cwd`
 - 用 `codex exec --json` 执行任务
 - 把过程写回飞书消息或飞书云文档
-- 支持图片分析、文件读取、文件回传、线程记忆、Skills、本机操作
+- 支持图片分析、图片回传、语音输入转写、文件读取、文件回传、线程记忆、Skills、本机操作
 
 这套项目特别适合那种“在飞书里提任务，机器人直接去代码库和电脑上干活，再把过程回给你”的工作方式。
 
@@ -22,6 +49,9 @@
 
 相对 OpenClaw 这类更通用的聊天外壳，这个项目的设计重点是“在飞书里把事做完”：
 
+- 更稳定：
+  - 没有额外网关，机器人就是直接在本机运行
+  - 链路更短、少一层中间环节，所以更不容易出现那种突然崩溃、整体掉线的问题
 - 更省 token：
   - 只保留有限轮历史，而不是无上限堆聊天记录
   - 图片和文件先下载到本地，再把本地路径交给 Codex，避免把大块原文反复塞进上下文
@@ -29,6 +59,9 @@
 - 更像真正干活的机器人：
   - 它直接跑本机 `codex exec`
   - 所以可以读写文件、执行命令、在工作目录里改代码、产出文件并回发给飞书
+- 支持多 agent 同时运行：
+  - 可以给不同 agent 配独立目录
+  - 互不干扰，并行处理各自的任务和工作区
 - 对飞书适配更深：
   - 支持群聊 `@` 触发
   - 支持“先 @ 再单独发文件/图片”的连续工作流
@@ -50,7 +83,7 @@
 
 你在飞书里给机器人发消息，机器人会按下面的路径工作：
 
-1. 收到文本 / 图片 / 文件消息
+1. 收到文本 / 图片 / 文件 / 语音消息
 2. 归一化成适合 Codex 的输入
 3. 在账号绑定的 `codex.cwd` 里执行 `codex exec`
 4. 持续记录进度
@@ -96,16 +129,16 @@ npm install
 3. `config/secrets/local.yaml`
 4. `config/feishu/<account>.json`
 
-不再支持 Keychain。
-
 推荐把配置拆成两层：
 
 - `config/secrets/local.yaml`
   - 放敏感项和本机私有配置
-  - 例如：飞书应用密钥、Bot Open ID、Codex token
+  - 例如：飞书应用密钥、Bot Open ID、Codex token、语音转写 key
 - `config/feishu/<account>.json`
   - 放非敏感运行项
   - 例如：回复模式、工作目录、进度模式、群聊触发规则
+
+如果要启用语音输入，建议配置一个 `speech` 段；不单独配置 `speech.api_key` 时，默认会复用 `codex.api_key` 做转写。
 
 ![Config Layout](docs/images/config-layout.svg)
 
@@ -436,6 +469,21 @@ export SUNCODEXCLAW_LAUNCHCTL_PREFIX="com.example.suncodexclaw.feishu"
 
 - 图片会先下载到本地
 - 再作为输入交给 Codex 分析
+- 如果 Codex 产出图片，可以回发原生图片消息
+
+如果 Codex 想把本机图片发回飞书，可以在输出里单独占行写：
+
+```text
+[[FEISHU_SEND_IMAGE:/absolute/or/relative/path]]
+```
+
+机器人会自动上传并回发原生图片消息。当前单图片限制是 `10 MB`。
+
+### 语音
+
+- 支持直接接收飞书语音消息
+- 机器人会先下载语音，再转写成文字交给 Codex
+- 默认复用 `codex.api_key` 做转写，也可以单独配置 `speech.api_key`
 
 ### 文件读取
 
