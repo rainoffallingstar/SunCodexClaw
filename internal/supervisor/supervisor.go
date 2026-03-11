@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"suncodexclaw/internal/configstore"
@@ -553,9 +552,7 @@ func (s *Supervisor) Stop(accounts []string) ([]string, error) {
 			}
 			continue
 		}
-		// Kill process group first (child processes), then the pid as fallback.
-		_ = syscall.Kill(-pid, syscall.SIGTERM)
-		_ = syscall.Kill(pid, syscall.SIGTERM)
+		terminateProcessTree(pid, false)
 		for i := 0; i < 40; i++ {
 			if !isRunning(pid) {
 				_ = os.Remove(s.pidFile(a))
@@ -564,8 +561,7 @@ func (s *Supervisor) Stop(accounts []string) ([]string, error) {
 			}
 			time.Sleep(250 * time.Millisecond)
 		}
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		_ = syscall.Kill(pid, syscall.SIGKILL)
+		terminateProcessTree(pid, true)
 		_ = os.Remove(s.pidFile(a))
 		lines = append(lines, fmt.Sprintf("[ok] force-stopped %s (pid=%d, manager=%s)", a, pid, manager))
 	next:
@@ -824,8 +820,7 @@ func (s *Supervisor) adoptExisting(ctx context.Context, account string) (bool, e
 		select {
 		case <-ctx.Done():
 			// Best-effort stop: kill process group and pid.
-			_ = syscall.Kill(-pid, syscall.SIGTERM)
-			_ = syscall.Kill(pid, syscall.SIGTERM)
+			terminateProcessTree(pid, false)
 			_ = os.Remove(s.pidFile(account))
 			return true, nil
 		case <-ticker.C:
@@ -895,8 +890,7 @@ func (s *Supervisor) spawnOnce(ctx context.Context, account string) (int, error)
 	cmd := exec.CommandContext(ctx, s.opts.NodeBin, script, "--account", account)
 	cmd.Dir = s.opts.RepoRoot
 	cmd.Env = os.Environ()
-	// Create new process group so we can terminate the whole subtree if needed.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureChildProcess(cmd)
 
 	// Tee output to file and also to supervisor stdout with account prefix.
 	stdout, _ := cmd.StdoutPipe()
@@ -911,8 +905,7 @@ func (s *Supervisor) spawnOnce(ctx context.Context, account string) (int, error)
 	go func(pid int) {
 		select {
 		case <-ctx.Done():
-			_ = syscall.Kill(-pid, syscall.SIGTERM)
-			_ = syscall.Kill(pid, syscall.SIGTERM)
+			terminateProcessTree(pid, false)
 		case <-done:
 		}
 	}(cmd.Process.Pid)
@@ -943,11 +936,7 @@ func (s *Supervisor) spawnOnce(ctx context.Context, account string) (int, error)
 	code := 0
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			if st, ok := exitErr.Sys().(syscall.WaitStatus); ok {
-				code = st.ExitStatus()
-			} else {
-				code = 1
-			}
+			code = exitErr.ExitCode()
 		} else if ctx.Err() != nil {
 			return 0, nil
 		} else {
@@ -976,13 +965,6 @@ func (s *Supervisor) readPID(account string) (int, error) {
 	var pid int
 	_, _ = fmt.Sscanf(strings.TrimSpace(string(b)), "%d", &pid)
 	return pid, nil
-}
-
-func isRunning(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	return syscall.Kill(pid, 0) == nil
 }
 
 func (s *Supervisor) appendLog(account, line string) error {
