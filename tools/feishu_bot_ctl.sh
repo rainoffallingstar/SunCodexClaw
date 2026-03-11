@@ -18,6 +18,12 @@ fi
 
 mkdir -p "${PID_DIR}" "${LOG_DIR}"
 
+GO_CTL_BIN="${SUNCODEXCLAWD_BIN:-${REPO_DIR}/bin/suncodexclawd}"
+USE_GO_CTL=false
+if [[ -x "${GO_CTL_BIN}" ]]; then
+  USE_GO_CTL=true
+fi
+
 usage() {
   cat <<'USAGE'
 Usage:
@@ -32,7 +38,41 @@ Notes:
   - account defaults to all for start/stop/restart/status
   - logs requires a single account name
   - on macOS, start/stop/status prefer launchctl for detached background jobs
+  - set SUNCODEXCLAW_DISABLE_LAUNCHCTL=true to force non-launchctl mode (passes --no-launchctl to Go daemon)
 USAGE
+}
+
+maybe_delegate_to_go_ctl() {
+  local action="$1"
+  local target="${2:-}"
+  local opt3="${3:-}"
+
+  [[ "${USE_GO_CTL}" == "true" ]] || return 1
+
+  local extra=()
+  if [[ "${SUNCODEXCLAW_DISABLE_LAUNCHCTL:-}" == "true" || "${SUNCODEXCLAW_DISABLE_LAUNCHCTL:-}" == "1" ]]; then
+    extra+=(--no-launchctl)
+  fi
+
+  case "${action}" in
+    list|start|stop|restart|status)
+      exec "${GO_CTL_BIN}" "${action}" "${target:-all}" "${extra[@]}"
+      ;;
+    logs)
+      if [[ -z "${target}" || "${target}" == "all" ]]; then
+        echo "[error] logs requires one account (example: assistant)" >&2
+        exit 1
+      fi
+      if [[ "${opt3}" == "--follow" || "${opt3}" == "-f" ]]; then
+        exec "${GO_CTL_BIN}" logs "${target}" -f "${extra[@]}"
+      else
+        exec "${GO_CTL_BIN}" logs "${target}" "${extra[@]}"
+      fi
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 resolve_bin_path() {
@@ -440,6 +480,8 @@ if [[ -z "${ACTION}" ]]; then
   usage
   exit 1
 fi
+
+maybe_delegate_to_go_ctl "${ACTION}" "${TARGET}" "${OPT3}" || true
 
 case "${ACTION}" in
   list)

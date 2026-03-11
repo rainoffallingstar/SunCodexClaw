@@ -1,0 +1,32 @@
+services:
+  suncodexclaw:
+    image: ghcr.io/${GITHUB_REPOSITORY:-rainoffallingstar/SunCodexClaw}:${IMAGE_TAG:-main}
+    container_name: suncodexclaw
+    restart: unless-stopped
+    # Bind-mounted volumes need to be writable for persisting runtime state and bot_open_id.
+    # If you hit permission errors, set SUNCODEXCLAW_UID/SUNCODEXCLAW_GID in .env to match your host user.
+    user: "${SUNCODEXCLAW_UID:-1000}:${SUNCODEXCLAW_GID:-1000}"
+    environment:
+      # Optional health server
+      SUNCODEXCLAW_HEALTH_ADDR: ":${HEALTH_PORT:-8080}"
+      HEALTH_PORT: "${HEALTH_PORT:-8080}"
+      # Restart policy (optional)
+      SUNCODEXCLAW_NO_RESTART: "${SUNCODEXCLAW_NO_RESTART:-false}"
+      SUNCODEXCLAW_MAX_RESTARTS: "${SUNCODEXCLAW_MAX_RESTARTS:-20}"
+      SUNCODEXCLAW_RESTART_WINDOW: "${SUNCODEXCLAW_RESTART_WINDOW:-10m}"
+      # Optional: override node binary
+      # NODE_BIN: "node"
+    ports:
+      - "${HEALTH_PORT:-8080}:${HEALTH_PORT:-8080}"
+    volumes:
+      - ./.codex:/home/node/.codex
+      - ./config:/app/config
+      - ./.runtime:/app/.runtime
+      # Mount your workspace to match codex.cwd (recommended: /workspace)
+      - ${WORKSPACE_PATH:-./workspace}:/workspace
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:'+(process.env.HEALTH_PORT||8080)+'/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s

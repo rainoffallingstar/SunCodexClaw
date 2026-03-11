@@ -5,15 +5,18 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
+    "docker:configure": "node -e \"console.error('note=deprecated; prefer: npm run go:configure')\" && node tools/configure_docker_config.js",
+    "go:configure": "GOCACHE=/tmp/suncodexclaw-gocache GOMODCACHE=/tmp/suncodexclaw-gomodcache go run ./cmd/suncodexclawd configure",
+    "go:build": "bash tools/build_go_bins.sh",
     "feishu:ws": "node tools/feishu_ws_bot.js --account default",
     "feishu:ws:dry": "node tools/feishu_ws_bot.js --account default --dry-run",
-    "feishu:ctl": "bash tools/feishu_bot_ctl.sh",
-    "feishu:start": "bash tools/feishu_bot_ctl.sh start all",
-    "feishu:stop": "bash tools/feishu_bot_ctl.sh stop all",
-    "feishu:restart": "bash tools/feishu_bot_ctl.sh restart all",
-    "feishu:status": "bash tools/feishu_bot_ctl.sh status all",
-    "feishu:install-launchagents": "bash tools/install_feishu_launchagents.sh install all",
-    "feishu:launchagents:status": "bash tools/install_feishu_launchagents.sh status all"
+    "feishu:ctl": "node -e \"console.error('note=deprecated; prefer: ./bin/suncodexclawd <cmd>')\" && bash tools/feishu_bot_ctl.sh",
+    "feishu:start": "node -e \"console.error('note=deprecated; prefer: ./bin/suncodexclawd start all')\" && bash tools/feishu_bot_ctl.sh start all",
+    "feishu:stop": "node -e \"console.error('note=deprecated; prefer: ./bin/suncodexclawd stop all')\" && bash tools/feishu_bot_ctl.sh stop all",
+    "feishu:restart": "node -e \"console.error('note=deprecated; prefer: ./bin/suncodexclawd restart all')\" && bash tools/feishu_bot_ctl.sh restart all",
+    "feishu:status": "node -e \"console.error('note=deprecated; prefer: ./bin/suncodexclawd status all')\" && bash tools/feishu_bot_ctl.sh status all",
+    "feishu:install-launchagents": "node -e \"console.error('note=deprecated; prefer: ./bin/suncodexclawd launchagents install all')\" && bash tools/install_feishu_launchagents.sh install all",
+    "feishu:launchagents:status": "node -e \"console.error('note=deprecated; prefer: ./bin/suncodexclawd launchagents status all')\" && bash tools/install_feishu_launchagents.sh status all"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.59.0",

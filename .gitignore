@@ -1,6 +1,12 @@
 # macOS
 .DS_Store
 
+# env
+.env
+
+# build artifacts
+bin/
+
 # dependencies
 node_modules/
 

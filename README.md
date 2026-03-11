@@ -120,6 +120,164 @@ npm install
 
 如果你是在 Codex 的工作环境里操作，直接把这个仓库 clone 到本机，再按下面步骤配置即可。
 
+## Docker 镜像（GitHub Actions 自动构建）
+
+本项目已提供 GitHub Actions：在推送到 `main` 或打 `v*` tag 时，自动构建并推送 Docker 镜像到 GHCR（`ghcr.io/rainoffallingstar/SunCodexClaw`）。
+
+拉取镜像：
+
+```bash
+docker pull ghcr.io/rainoffallingstar/SunCodexClaw:main
+```
+
+镜像内已安装 `codex` CLI，并约定将 `CODEX_HOME` 设为 `/home/node/.codex`。你可以把宿主机的 `.codex` 目录挂载进去，先在容器里用命令行完成登录/配置，然后直接启动机器人服务。
+
+如果你的 `codex` 需要走自定义网关/代理（自建 base url），可在 `config/*` 里配置 `codex.base_url`，或在运行容器时设置环境变量 `FEISHU_CODEX_BASE_URL`（会传递给 `codex` 进程的 `OPENAI_BASE_URL/OPENAI_API_BASE`）。
+
+准备（建议在宿主机准备好可挂载目录）：
+
+```bash
+mkdir -p .codex config
+cp config/secrets/local.example.yaml config/secrets/local.yaml
+cp config/feishu/default.example.json config/feishu/assistant.json
+```
+
+如果你希望按“容器内固定工作目录”来配置 `codex.cwd`/`codex.add_dirs`（例如统一挂载到 `/workspace`），可以用交互式脚本生成账号配置：
+
+```bash
+npm run go:configure
+```
+
+如果你希望用 Go 来做“缺失项发现 + 交互式补齐”，可使用：
+
+```bash
+./bin/suncodexclawd configure
+```
+
+向导会按推荐拆分写入：
+
+- `config/secrets/local.yaml`：飞书密钥、`codex.api_key`、（可选）`codex.base_url` 等敏感项
+- `config/feishu/<account>.json`：`bot_name`、progress 文档标题、`codex.cwd/add_dirs/sandbox/approval_policy` 等运行项
+
+说明：Go 向导会直接读写 `local.yaml`（保留旧布局兼容），不再依赖 Node 的 YAML 依赖。
+
+交互式配置（在容器里执行 `codex` 命令，写入挂载的 `.codex`）：
+
+```bash
+docker run --rm \
+  -it \
+  -v "$PWD/.codex:/home/node/.codex" \
+  -v "$PWD/config:/app/config" \
+  ghcr.io/rainoffallingstar/SunCodexClaw:main shell
+```
+
+随后启动所有飞书机器人服务（会按 `config/feishu/*.json` 中除 `default.json` 外的账号启动；例如上面的 `assistant.json`）：
+
+```bash
+docker run --rm \
+  -v "$PWD/.codex:/home/node/.codex" \
+  -v "$PWD/config:/app/config" \
+  -v "$PWD/.runtime:/app/.runtime" \
+  -v "<HOST_WORKSPACE>:/workspace" \
+  ghcr.io/rainoffallingstar/SunCodexClaw:main
+```
+
+本机使用该转发时，先构建 Go 二进制：
+
+```bash
+npm run go:build
+```
+
+只启动一次（不自动重启 crash loop；适合排障）：
+
+```bash
+docker run --rm \
+  -v "$PWD/.codex:/home/node/.codex" \
+  -v "$PWD/config:/app/config" \
+  -v "$PWD/.runtime:/app/.runtime" \
+  -v "<HOST_WORKSPACE>:/workspace" \
+  ghcr.io/rainoffallingstar/SunCodexClaw:main start --once
+```
+
+严格启动检查（如果任一账号未在短时间内起来则退出非 0；适合 CI/部署自检）：
+
+```bash
+docker run --rm \
+  -v "$PWD/.codex:/home/node/.codex" \
+  -v "$PWD/config:/app/config" \
+  -v "$PWD/.runtime:/app/.runtime" \
+  -v "<HOST_WORKSPACE>:/workspace" \
+  ghcr.io/rainoffallingstar/SunCodexClaw:main start all --strict-start --start-check-delay 2s
+```
+
+也可以用 `docker compose`（见 `docker-compose.yml`，把 `./workspace` 换成你自己的工作区路径或使用 bind mount）：
+
+```bash
+cp .env.example .env
+# 如果使用 bind mount，确保宿主机目录对容器用户可写（否则 pid/log/自动持久化会失败）
+# Linux 常用：SUNCODEXCLAW_UID=$(id -u), SUNCODEXCLAW_GID=$(id -g)
+docker compose up -d
+docker compose logs -f
+```
+
+可选：启用健康检查接口（容器内 `:8080`，路径 `/healthz`、`/readyz`、`/status`）：
+
+```bash
+docker run --rm \
+  -p 8080:8080 \
+  -e SUNCODEXCLAW_HEALTH_ADDR=:8080 \
+  -v "$PWD/.codex:/home/node/.codex" \
+  -v "$PWD/config:/app/config" \
+  -v "$PWD/.runtime:/app/.runtime" \
+  -v "<HOST_WORKSPACE>:/workspace" \
+  ghcr.io/rainoffallingstar/SunCodexClaw:main
+```
+
+可选：调整重启策略（环境变量）：
+
+- `SUNCODEXCLAW_NO_RESTART=true` 禁止崩溃自动重启
+- `SUNCODEXCLAW_MAX_RESTARTS=20`、`SUNCODEXCLAW_RESTART_WINDOW=10m` 限制 crash loop
+
+查看某个账号日志（容器内子命令）：
+
+```bash
+docker run --rm \
+  -v "$PWD/.codex:/home/node/.codex" \
+  -v "$PWD/config:/app/config" \
+  -v "$PWD/.runtime:/app/.runtime" \
+  -v "<HOST_WORKSPACE>:/workspace" \
+  ghcr.io/rainoffallingstar/SunCodexClaw:main logs assistant -f
+```
+
+查看全部账号日志（tail，容器内子命令）：
+
+```bash
+docker run --rm \
+  -v "$PWD/.codex:/home/node/.codex" \
+  -v "$PWD/config:/app/config" \
+  -v "$PWD/.runtime:/app/.runtime" \
+  -v "<HOST_WORKSPACE>:/workspace" \
+  ghcr.io/rainoffallingstar/SunCodexClaw:main logs all
+```
+
+说明：`logs --follow` 支持单账号或全部账号；多账号同时 follow 会输出带账号前缀的多路日志。
+说明：`logs` 需要显式指定账号或 `all`。
+
+如果某个账号反复崩溃触发重启限流，daemon 会在 `.runtime/feishu/errors/<account>.err` 记录 `last_error`，并在 `status` 输出里展示。
+
+启动前预检（等价于对每个账号跑一次 `--dry-run`）：
+
+```bash
+docker run --rm \
+  -v "$PWD/.codex:/home/node/.codex" \
+  -v "$PWD/config:/app/config" \
+  -v "$PWD/.runtime:/app/.runtime" \
+  -v "<HOST_WORKSPACE>:/workspace" \
+  ghcr.io/rainoffallingstar/SunCodexClaw:main preflight
+```
+
+发布版本：创建并 push 一个形如 `v1.2.3` 的 tag，Actions 会额外推送对应 tag 的镜像。
+
 ## 配置模型
 
 当前读取顺序是：
@@ -157,10 +315,18 @@ SunCodexClaw/
 ├── tools/
 │   ├── feishu_ws_bot.js
 │   ├── feishu_bot_ctl.sh
-│   ├── install_feishu_launchagents.sh
+│   ├── install_feishu_launchagents.sh (deprecated wrapper)
 │   └── lib/local_secret_store.js
 └── README.md
 ```
+
+## Deprecated
+
+- `tools/install_feishu_launchagents.sh`：兼容 wrapper（已 deprecated），请改用 `./bin/suncodexclawd launchagents ...`
+- `tools/configure_docker_config.js`：旧的 Docker 配置向导（已 deprecated），请改用 `npm run go:configure`
+- `tools/feishu_bot_ctl.sh`：兼容 ctl 脚本（建议直接用 `./bin/suncodexclawd ...`）
+- `npm run docker:configure`：已 deprecated（等价于运行旧的 `tools/configure_docker_config.js`），建议用 `npm run go:configure`
+- `npm run feishu:*`：已逐步 deprecated（仍可用但会提示），建议改用 `./bin/suncodexclawd <cmd>`
 
 ## 配置示例
 
@@ -251,10 +417,10 @@ config:
 
 ## 快速验证
 
-先做 dry run：
+先做预检（等价于对账号跑一次 bot 的 dry-run）：
 
 ```bash
-node tools/feishu_ws_bot.js --account assistant --dry-run
+./bin/suncodexclawd preflight assistant
 ```
 
 如果输出里看到这些关键信号，基本就通了：
@@ -425,36 +591,69 @@ node tools/feishu_ws_bot.js --account assistant --dry-run
 
 ## 启动
 
-前台跑单个账号：
+前台跑单个账号（Go supervisor 启动 Node bot）：
 
 ```bash
-node tools/feishu_ws_bot.js --account assistant
+./bin/suncodexclawd start assistant
 ```
 
 统一管理多账号：
 
 ```bash
-bash tools/feishu_bot_ctl.sh list
-bash tools/feishu_bot_ctl.sh start all
-bash tools/feishu_bot_ctl.sh status all
-bash tools/feishu_bot_ctl.sh logs assistant --follow
-bash tools/feishu_bot_ctl.sh restart assistant
-bash tools/feishu_bot_ctl.sh stop all
+./bin/suncodexclawd list
+./bin/suncodexclawd start all
+./bin/suncodexclawd status all
+./bin/suncodexclawd logs assistant -f
+./bin/suncodexclawd restart assistant
+./bin/suncodexclawd stop all
 ```
+
+说明（macOS）：
+
+- 在 macOS 上 Go daemon 默认也会用 `launchctl submit/remove/list` 托管机器人进程（与原脚本一致），因此 `start` 是“detached”模式，不会进入常驻的崩溃自重启循环；`status/stop` 会显示 `manager=launchctl` 与 `last_exit`。
+- 如需强制禁用 launchctl（让 Go 以 pidfile/supervisor 模式运行），可设置 `SUNCODEXCLAW_DISABLE_LAUNCHCTL=true` 或使用 `--no-launchctl`。
+- 如果某账号存在 `~/Library/LaunchAgents/<label>.plist`，Go 的 `status` 还会追加 `launchagent=loaded|file-only`，帮助定位“plist 存在但服务未加载”的情况。
 
 ## 开机自启
 
 macOS 下可安装 LaunchAgents：
 
 ```bash
-bash tools/install_feishu_launchagents.sh install all
+./bin/suncodexclawd launchagents install all
 ```
 
 查看状态：
 
 ```bash
-bash tools/install_feishu_launchagents.sh status all
+./bin/suncodexclawd launchagents status all
 ```
+
+`status` 会输出每个账号的 `mode=node|supervisor`，方便确认当前 plist 是“直接跑 Node”还是“跑 Go supervisor（精确限流）”。
+可通过 `--run-mode supervisor --daemon-bin ./bin/suncodexclawd` 让 LaunchAgent 直接运行 Go supervisor（从而使用 `SUNCODEXCLAW_MAX_RESTARTS/SUNCODEXCLAW_RESTART_WINDOW` 精确限流）。
+
+自定义 label 前缀示例：
+
+```bash
+./bin/suncodexclawd launchagents install all --prefix com.example.suncodexclaw.feishu
+```
+
+崩溃重启策略（launchd 侧，best-effort）：
+
+- 默认会重启“异常退出”的进程（`KeepAlive.SuccessfulExit=false`），并用 `ThrottleInterval=10s` 限制 crash loop。
+- 可通过环境变量调整：
+  - `SUNCODEXCLAW_LAUNCHAGENT_KEEPALIVE=true|false`
+  - `SUNCODEXCLAW_LAUNCHAGENT_THROTTLE_INTERVAL=10`（秒）
+- 注：launchd 没有 Go daemon 那种“窗口内最大重启次数”精确限流；如需该能力，建议不要用 LaunchAgents，而用 `./bin/suncodexclawd start` 常驻运行。
+- 另一个选择：让 LaunchAgent 运行 Go supervisor（精确限流），并禁用 launchctl detached 模式：
+  - `export SUNCODEXCLAW_LAUNCHAGENT_RUN_MODE=supervisor`（需要先构建 `./bin/suncodexclawd`）
+  - 可选：传入 Go 的限流参数（精确）：`SUNCODEXCLAW_MAX_RESTARTS=20`、`SUNCODEXCLAW_RESTART_WINDOW=10m`、`SUNCODEXCLAW_NO_RESTART=false`（仅 supervisor 模式会写入 plist 环境变量）
+  - 然后重新 `install` 对应账号（plist 会执行 `./bin/suncodexclawd start <account> --no-launchctl`）
+
+说明（与 Go daemon 对齐）：
+
+- LaunchAgents 的 label 使用 `SUNCODEXCLAW_LAUNCHCTL_PREFIX` + `.<account>`（与 Go daemon `launchctl` 模式一致）。
+- LaunchAgents 的日志也落在仓库内 `.runtime/feishu/logs/<account>.log`，因此 `./bin/suncodexclawd logs <account> -f` 能读到同一份日志。
+- 如果某个账号已安装 LaunchAgent plist，Go daemon 在 `start/restart` 时会优先走 `launchctl bootstrap/kickstart` 流程，而不是 `launchctl submit`，避免同 label 两套 job 冲突。
 
 默认 label 前缀是：
 
@@ -591,7 +790,7 @@ export SUNCODEXCLAW_LAUNCHCTL_PREFIX="com.example.suncodexclaw.feishu"
 
 - `codex --version`
 - `which codex`
-- LaunchAgents 环境里是否能拿到 `codex`
+- LaunchAgents 环境里是否能拿到 `codex`（必要时用 `./bin/suncodexclawd launchagents install ... --codex-bin "$(which codex)"` 写进 plist）
 - token 是不是已经通过 `codex` 登录或在配置里提供
 
 ## 安全建议

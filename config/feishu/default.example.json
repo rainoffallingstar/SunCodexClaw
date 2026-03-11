@@ -27,6 +27,7 @@
   "codex": {
     "bin": "codex",
     "api_key": "",
+    "base_url": "https://api.openai.com/v1",
     "model": "",
     "reasoning_effort": "",
     "profile": "",
