@@ -102,8 +102,6 @@ jobs:
 
           go build -trimpath -ldflags "-s -w" -o "${OUT}/suncodexclawd${EXT}" ./cmd/suncodexclawd
 
-          (cd "dist/${VERSION}" && sha256sum "${{ matrix.goos }}_${{ matrix.goarch }}/"* > "${{ matrix.goos }}_${{ matrix.goarch }}.sha256")
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -126,13 +124,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release
-          for dir in dist/*/*; do
-            base="$(basename "${dir}")"
-            parent="$(basename "$(dirname "${dir}")")"
-            tar -czf "release/${parent}-${base}.tar.gz" -C "${dir}" .
-            if [[ -f "dist/${parent}/${base}.sha256" ]]; then
-              cp "dist/${parent}/${base}.sha256" "release/${parent}-${base}.sha256"
-            fi
+          shopt -s nullglob
+          for dir in dist/*; do
+            [[ -d "${dir}" ]] || continue
+            name="$(basename "${dir}")"
+            tar -czf "release/${name}.tar.gz" -C "${dir}" .
+            sha256sum "release/${name}.tar.gz" > "release/${name}.tar.gz.sha256"
           done
 
       - name: Create GitHub Release
