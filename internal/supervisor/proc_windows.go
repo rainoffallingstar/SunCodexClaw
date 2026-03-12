@@ -35,7 +35,18 @@ func platformIsRunning(pid int) bool {
 		return false
 	}
 	// Use Windows process handle check.
-	h, err := syscall.OpenProcess(syscall.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	// Some access constants are not defined in the Go syscall package; use numeric values.
+	// PROCESS_QUERY_LIMITED_INFORMATION = 0x1000 (Vista+)
+	// PROCESS_QUERY_INFORMATION = 0x0400
+	const (
+		processQueryLimitedInformation = 0x1000
+		processQueryInformation        = 0x0400
+		stillActive                    = 259
+	)
+	h, err := syscall.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
+	if err != nil {
+		h, err = syscall.OpenProcess(processQueryInformation, false, uint32(pid))
+	}
 	if err != nil {
 		return false
 	}
@@ -46,5 +57,5 @@ func platformIsRunning(pid int) bool {
 		return false
 	}
 	// STILL_ACTIVE == 259
-	return code == 259
+	return code == stillActive
 }
