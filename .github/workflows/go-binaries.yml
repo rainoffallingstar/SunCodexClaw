@@ -140,32 +140,32 @@ jobs:
           set -euo pipefail
           # Delete existing release for the tag (so reruns overwrite assets cleanly).
           python3 - <<'PY'
-import json, os, sys, urllib.request, urllib.error
-repo = os.environ["GITHUB_REPOSITORY"]
-tag = os.environ["TAG"]
-token = os.environ["GH_TOKEN"]
-req = urllib.request.Request(
-  f"https://api.github.com/repos/{repo}/releases/tags/{tag}",
-  headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
-)
-try:
-  with urllib.request.urlopen(req) as r:
-    data = json.loads(r.read().decode("utf-8"))
-    rid = data.get("id")
-except urllib.error.HTTPError as e:
-  if e.code == 404:
-    sys.exit(0)
-  raise
-if not rid:
-  sys.exit(0)
-req2 = urllib.request.Request(
-  f"https://api.github.com/repos/{repo}/releases/{rid}",
-  headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
-  method="DELETE",
-)
-with urllib.request.urlopen(req2) as r:
-  pass
-PY
+          import json, os, sys, urllib.request, urllib.error
+          repo = os.environ["GITHUB_REPOSITORY"]
+          tag = os.environ["TAG"]
+          token = os.environ["GH_TOKEN"]
+          req = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/releases/tags/{tag}",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+          )
+          try:
+            with urllib.request.urlopen(req) as r:
+              data = json.loads(r.read().decode("utf-8"))
+              rid = data.get("id")
+          except urllib.error.HTTPError as e:
+            if e.code == 404:
+              sys.exit(0)
+            raise
+          if not rid:
+            sys.exit(0)
+          req2 = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/releases/{rid}",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+            method="DELETE",
+          )
+          with urllib.request.urlopen(req2) as r:
+            pass
+          PY
       - name: Create GitHub Release (upload)
         uses: softprops/action-gh-release@v2
         with:
