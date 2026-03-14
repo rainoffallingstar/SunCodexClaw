@@ -373,6 +373,16 @@ function resolveCodexConfig(config) {
     ['env_openai', process.env.OPENAI_API_KEY || ''],
     ['config', codexConfig.api_key || ''],
   ]);
+  const baseURL = String(
+    getArg(
+      '--codex-base-url',
+      process.env.FEISHU_CODEX_BASE_URL
+        || process.env.OPENAI_BASE_URL
+        || process.env.OPENAI_API_BASE
+        || codexConfig.base_url
+        || ''
+    )
+  ).trim().replace(/\/+$/, '');
   const sandbox = String(
     getArg('--codex-sandbox', process.env.FEISHU_CODEX_SANDBOX || codexConfig.sandbox || 'danger-full-access')
   ).trim();
@@ -413,6 +423,7 @@ function resolveCodexConfig(config) {
     systemPrompt: String(getArg('--system-prompt', process.env.FEISHU_CODEX_SYSTEM_PROMPT || codexConfig.system_prompt || DEFAULT_CODEX_SYSTEM_PROMPT)).trim(),
     apiKey: apiKey.value,
     apiKeySource: apiKey.source,
+    baseURL,
     sandbox,
     approvalPolicy,
   };
@@ -2328,6 +2339,7 @@ function runCodexExec({
   sandbox,
   approvalPolicy,
   apiKey = '',
+  baseURL = '',
   prompt,
   imagePaths = [],
   resumeSessionId = '',
@@ -2370,6 +2382,11 @@ function runCodexExec({
     if (resolvedApiKey) {
       childEnv.OPENAI_API_KEY = resolvedApiKey;
       childEnv.CODEX_API_KEY = resolvedApiKey;
+    }
+    const resolvedBaseURL = String(baseURL || '').trim().replace(/\/+$/, '');
+    if (resolvedBaseURL) {
+      childEnv.OPENAI_BASE_URL = resolvedBaseURL;
+      childEnv.OPENAI_API_BASE = resolvedBaseURL;
     }
 
     const child = spawn(bin, args, {
@@ -2489,6 +2506,7 @@ async function generateCodexReply({
       cwd: codex.cwd,
       addDirs: codex.addDirs,
       apiKey: codex.apiKey,
+      baseURL: codex.baseURL,
       sandbox: codex.sandbox,
       approvalPolicy: codex.approvalPolicy,
       prompt,
