@@ -48,6 +48,7 @@ cp config/feishu/default.example.json config/feishu/assistant.json
 
 ```bash
 docker run --rm -it \
+  --env-file .env \
   -v "$PWD/.codex:/home/node/.codex" \
   -v "$PWD/config:/app/config" \
   -v "$PWD/.runtime:/app/.runtime" \
@@ -55,6 +56,33 @@ docker run --rm -it \
   ghcr.io/rainoffallingstar/SunCodexClaw:main \
   configure --account assistant
 ```
+
+如果你希望“自动生成/无人值守”，可以把关键项放到 `.env`，并使用 `--yes --from-env`：
+
+```bash
+cat > .env <<'EOF'
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=...
+FEISHU_ENCRYPT_KEY=...
+FEISHU_VERIFICATION_TOKEN=...
+FEISHU_CODEX_API_KEY=sk-...
+# 可选（自建网关/代理）
+# FEISHU_CODEX_BASE_URL=https://api.openai.com/v1
+EOF
+
+docker run --rm -it \
+  --env-file .env \
+  -v "$PWD/config:/app/config" \
+  -v "$PWD/.runtime:/app/.runtime" \
+  -v "$PWD/workspace:/workspace" \
+  ghcr.io/rainoffallingstar/SunCodexClaw:main \
+  configure --account assistant --yes --from-env
+```
+
+说明：
+
+- `.env` 默认只影响 `docker compose` 的变量替换；要传进容器请用 `--env-file`（或自行在 compose 里配置 `environment:`）。
+- 若你要多账号分别注入环境变量，可用账号前缀：`FEISHU_<ACCOUNT>_APP_ID`、`FEISHU_<ACCOUNT>_CODEX_API_KEY`（例如 `FEISHU_ASSISTANT_APP_ID`）。
 
 如果你要检查配置是否能跑（不真正启动）：
 

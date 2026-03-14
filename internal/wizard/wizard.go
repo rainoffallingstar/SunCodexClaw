@@ -41,7 +41,7 @@ type Options struct {
 
 func Usage(w io.Writer, bin string) {
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintf(w, "  %s configure [--account assistant] [--yes]\n", bin)
+	fmt.Fprintf(w, "  %s configure [--account assistant] [--yes] [--from-env]\n", bin)
 }
 
 func Configure(opts Options) error {
@@ -49,6 +49,7 @@ func Configure(opts Options) error {
 	fs.SetOutput(io.Discard)
 	account := fs.String("account", "assistant", "feishu account name (config/feishu/<account>.json)")
 	yes := fs.Bool("yes", false, "use recommended defaults for missing fields")
+	fromEnv := fs.Bool("from-env", false, "fill missing fields from environment variables when available")
 	if err := fs.Parse(opts.Args); err != nil {
 		return err
 	}
@@ -84,6 +85,22 @@ func Configure(opts Options) error {
 		for _, item := range group.items {
 			if hasDotted(effective, item.Key) {
 				continue
+			}
+			if *fromEnv {
+				if raw, ok := envValueForKey(*account, item.Key); ok {
+					val, ok2, err := coerce(item, raw)
+					if err != nil {
+						return err
+					}
+					if ok2 {
+						patch := overlayPatch
+						if item.Target == "secrets" {
+							patch = secretsPatch
+						}
+						setDotted(patch, item.Key, val)
+					}
+					continue
+				}
 			}
 			val, ok, askErr := askForItem(reader, item, *yes)
 			if askErr != nil {
@@ -129,6 +146,129 @@ func prompt(r *bufio.Reader, question, def string) (string, error) {
 		return def, nil
 	}
 	return v, nil
+}
+
+func normEnvAccount(account string) string {
+	raw := strings.TrimSpace(account)
+	if raw == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r - ('a' - 'A'))
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+func firstEnv(keys ...string) (string, bool) {
+	for _, k := range keys {
+		v := strings.TrimSpace(os.Getenv(k))
+		if v != "" {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+func envValueForKey(account, key string) (string, bool) {
+	acc := normEnvAccount(account)
+	accPrefix := ""
+	if acc != "" {
+		accPrefix = "FEISHU_" + acc + "_"
+	}
+
+	// Keep the mapping aligned with tools/feishu_ws_bot.js env names where possible.
+	switch key {
+	// Feishu required credentials (secrets)
+	case "app_id":
+		return firstEnv(accPrefix+"APP_ID", "FEISHU_APP_ID")
+	case "app_secret":
+		return firstEnv(accPrefix+"APP_SECRET", "FEISHU_APP_SECRET")
+	case "encrypt_key":
+		return firstEnv(accPrefix+"ENCRYPT_KEY", "FEISHU_ENCRYPT_KEY")
+	case "verification_token":
+		return firstEnv(accPrefix+"VERIFICATION_TOKEN", "FEISHU_VERIFICATION_TOKEN")
+
+	// Optional bot open id
+	case "bot_open_id":
+		return firstEnv(accPrefix+"BOT_OPEN_ID", "FEISHU_BOT_OPEN_ID")
+
+	// Common bot settings (overlay)
+	case "bot_name":
+		return firstEnv(accPrefix+"BOT_NAME", "FEISHU_BOT_NAME")
+	case "domain":
+		return firstEnv(accPrefix+"DOMAIN", "FEISHU_DOMAIN")
+	case "reply_mode":
+		return firstEnv(accPrefix+"REPLY_MODE", "FEISHU_REPLY_MODE")
+	case "reply_prefix":
+		return firstEnv(accPrefix+"REPLY_PREFIX", "FEISHU_REPLY_PREFIX")
+	case "require_mention":
+		return firstEnv(accPrefix+"REQUIRE_MENTION", "FEISHU_REQUIRE_MENTION")
+	case "require_mention_group_only":
+		return firstEnv(accPrefix+"REQUIRE_MENTION_GROUP_ONLY", "FEISHU_REQUIRE_MENTION_GROUP_ONLY")
+	case "mention_aliases":
+		return firstEnv(accPrefix+"MENTION_ALIASES", "FEISHU_MENTION_ALIASES")
+
+	// Progress (overlay)
+	case "progress.enabled":
+		return firstEnv(accPrefix+"PROGRESS_ENABLED", "FEISHU_PROGRESS_ENABLED")
+	case "progress.message":
+		return firstEnv(accPrefix+"PROGRESS_MESSAGE", "FEISHU_PROGRESS_MESSAGE")
+	case "progress.mode":
+		return firstEnv(accPrefix+"PROGRESS_MODE", "FEISHU_PROGRESS_MODE")
+	case "progress.doc.title_prefix":
+		return firstEnv(accPrefix+"PROGRESS_DOC_TITLE_PREFIX", "FEISHU_PROGRESS_DOC_TITLE_PREFIX")
+
+	// Codex settings (overlay + secrets)
+	case "codex.cwd":
+		// The bot runtime uses FEISHU_CODEX_CD; accept a more explicit name too.
+		return firstEnv(accPrefix+"CODEX_CWD", accPrefix+"CODEX_CD", "FEISHU_CODEX_CWD", "FEISHU_CODEX_CD")
+	case "codex.add_dirs":
+		return firstEnv(accPrefix+"CODEX_ADD_DIRS", "FEISHU_CODEX_ADD_DIRS")
+	case "codex.bin":
+		return firstEnv(accPrefix+"CODEX_BIN", "FEISHU_CODEX_BIN", "CODEX_BIN")
+	case "codex.model":
+		return firstEnv(accPrefix+"CODEX_MODEL", "FEISHU_CODEX_MODEL")
+	case "codex.reasoning_effort":
+		return firstEnv(accPrefix+"CODEX_REASONING_EFFORT", "FEISHU_CODEX_REASONING_EFFORT")
+	case "codex.profile":
+		return firstEnv(accPrefix+"CODEX_PROFILE", "FEISHU_CODEX_PROFILE")
+	case "codex.history_turns":
+		return firstEnv(accPrefix+"HISTORY_TURNS", "FEISHU_HISTORY_TURNS")
+	case "codex.sandbox":
+		return firstEnv(accPrefix+"CODEX_SANDBOX", "FEISHU_CODEX_SANDBOX")
+	case "codex.approval_policy":
+		return firstEnv(accPrefix+"CODEX_APPROVAL_POLICY", "FEISHU_CODEX_APPROVAL_POLICY")
+	case "codex.api_key":
+		return firstEnv(accPrefix+"CODEX_API_KEY", "FEISHU_CODEX_API_KEY", "CODEX_API_KEY", "OPENAI_API_KEY")
+	case "codex.base_url":
+		return firstEnv(accPrefix+"CODEX_BASE_URL", "FEISHU_CODEX_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE")
+
+	// Speech (overlay + secrets)
+	case "speech.enabled":
+		return firstEnv(accPrefix+"SPEECH_ENABLED", "FEISHU_SPEECH_ENABLED")
+	case "speech.api_key":
+		return firstEnv(accPrefix+"SPEECH_API_KEY", "FEISHU_SPEECH_API_KEY")
+	case "speech.model":
+		return firstEnv(accPrefix+"SPEECH_MODEL", "FEISHU_SPEECH_MODEL")
+	case "speech.language":
+		return firstEnv(accPrefix+"SPEECH_LANGUAGE", "FEISHU_SPEECH_LANGUAGE")
+	case "speech.base_url":
+		return firstEnv(accPrefix+"SPEECH_BASE_URL", "FEISHU_SPEECH_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE")
+	case "speech.ffmpeg_bin":
+		return firstEnv(accPrefix+"SPEECH_FFMPEG_BIN", "FEISHU_SPEECH_FFMPEG_BIN")
+	}
+
+	return "", false
 }
 
 type missingGroup struct {
