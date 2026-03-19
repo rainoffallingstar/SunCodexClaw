@@ -15,7 +15,7 @@
 
   <text x="84" y="450" fill="#93C5FD" font-family="Menlo, Monaco, monospace" font-size="28">$ docker run --rm -it \</text>
   <text x="84" y="494" fill="#93C5FD" font-family="Menlo, Monaco, monospace" font-size="28">  -v "$PWD/config:/app/config" -v "$PWD/.runtime:/app/.runtime" \</text>
-  <text x="84" y="538" fill="#93C5FD" font-family="Menlo, Monaco, monospace" font-size="28">  -v "$PWD/workspace:/workspace" ghcr.io/rainoffallingstar/SunCodexClaw:main configure</text>
+  <text x="84" y="538" fill="#93C5FD" font-family="Menlo, Monaco, monospace" font-size="28">  -v "$PWD/workspace:/workspace" ghcr.io/rainoffallingstar/suncodexclaw:main configure</text>
 
   <text x="84" y="578" fill="#93C5FD" font-family="Menlo, Monaco, monospace" font-size="28">$ docker compose up -d</text>
   <text x="84" y="622" fill="#93C5FD" font-family="Menlo, Monaco, monospace" font-size="28">$ docker compose logs -f</text>

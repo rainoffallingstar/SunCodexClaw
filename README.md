@@ -60,7 +60,7 @@ cp app.env.example app.env
 
 ```bash
 cat > .env <<'EOF'
-GITHUB_REPOSITORY=rainoffallingstar/SunCodexClaw
+GITHUB_REPOSITORY=rainoffallingstar/suncodexclaw
 IMAGE_TAG=main
 WORKSPACE_PATH=./workspace
 HEALTH_PORT=8080
@@ -132,7 +132,7 @@ docker run --rm \
   -v "$PWD/config:/app/config" \
   -v "$PWD/.runtime:/app/.runtime" \
   -v "$PWD/workspace:/workspace" \
-  ghcr.io/rainoffallingstar/SunCodexClaw:main start
+  ghcr.io/rainoffallingstar/suncodexclaw:main start
 ```
 
 ## 配置文件布局（推荐）
@@ -254,7 +254,7 @@ docker compose up -d
 镜像由 GitHub Actions 自动构建并推送到 GHCR：
 
 ```bash
-docker pull ghcr.io/rainoffallingstar/SunCodexClaw:main
+docker pull ghcr.io/rainoffallingstar/suncodexclaw:main
 ```
 
 ## Deprecated

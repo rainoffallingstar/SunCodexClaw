@@ -1,6 +1,6 @@
 services:
   suncodexclaw:
-    image: ghcr.io/${GITHUB_REPOSITORY:-rainoffallingstar/SunCodexClaw}:${IMAGE_TAG:-main}
+    image: ghcr.io/${GITHUB_REPOSITORY:-rainoffallingstar/suncodexclaw}:${IMAGE_TAG:-main}
     container_name: suncodexclaw
     restart: unless-stopped
     # Bind-mounted volumes need to be writable for persisting runtime state and bot_open_id.
