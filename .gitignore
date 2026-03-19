@@ -3,6 +3,7 @@
 
 # env
 .env
+app.env
 
 # build artifacts
 bin/

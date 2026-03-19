@@ -46,59 +46,70 @@ cp config/feishu/default.example.json config/feishu/assistant.json
 - `config/secrets/local.yaml`：敏感项（飞书密钥、`codex.api_key`、可选 `codex.base_url`）
 - `config/feishu/<account>.json`：非敏感运行项（如 `bot_name`、`progress`、`codex.cwd/add_dirs` 等）
 
+先准备两个环境文件：
+
+- `.env`：给 `docker compose` 自己做变量替换（镜像标签、端口、挂载路径、UID/GID）
+- `app.env`：给容器内业务进程使用（`FEISHU_*`、`OPENAI_*`、`CODEX_*`）
+
 ```bash
-docker run --rm -it \
-  --env-file .env \
-  -v "$PWD/.codex:/home/node/.codex" \
-  -v "$PWD/config:/app/config" \
-  -v "$PWD/.runtime:/app/.runtime" \
-  -v "$PWD/workspace:/workspace" \
-  ghcr.io/rainoffallingstar/SunCodexClaw:main \
-  configure --account assistant
+cp .env.example .env
+cp app.env.example app.env
 ```
 
-如果你希望“自动生成/无人值守”，可以把关键项放到 `.env`，并使用 `--yes --from-env`：
+`.env` 示例：
 
 ```bash
 cat > .env <<'EOF'
+GITHUB_REPOSITORY=rainoffallingstar/SunCodexClaw
+IMAGE_TAG=main
+WORKSPACE_PATH=./workspace
+HEALTH_PORT=8080
+SUNCODEXCLAW_UID=1000
+SUNCODEXCLAW_GID=1000
+EOF
+```
+
+`app.env` 示例：
+
+```bash
+cat > app.env <<'EOF'
 FEISHU_APP_ID=cli_xxx
 FEISHU_APP_SECRET=...
 FEISHU_ENCRYPT_KEY=...
 FEISHU_VERIFICATION_TOKEN=...
+FEISHU_BOT_NAME=飞书 Codex 助手
 FEISHU_CODEX_API_KEY=sk-...
-# 可选（自建网关/代理）
-# FEISHU_CODEX_BASE_URL=https://api.openai.com/v1
+FEISHU_CODEX_BASE_URL=https://api.openai.com/v1
+FEISHU_CODEX_CWD=/workspace
+FEISHU_CODEX_MODEL=gpt-5.4
+FEISHU_CODEX_REASONING_EFFORT=xhigh
+FEISHU_PROGRESS_MODE=doc
+FEISHU_PROGRESS_DOC_TITLE_PREFIX=AI 助手｜任务进度
 EOF
-
-docker run --rm -it \
-  --env-file .env \
-  -v "$PWD/config:/app/config" \
-  -v "$PWD/.runtime:/app/.runtime" \
-  -v "$PWD/workspace:/workspace" \
-  ghcr.io/rainoffallingstar/SunCodexClaw:main \
-  configure --account assistant --yes --from-env
 ```
 
 说明：
 
-- `.env` 默认只影响 `docker compose` 的变量替换；要传进容器请用 `--env-file`（或自行在 compose 里配置 `environment:`）。
+- 仓库内置的 `docker-compose.yml` 已经通过 `env_file:` 读取 `./app.env`，所以 `docker compose run/up` 时容器会自动拿到这些变量。
+- `.env` 仍然只影响 `docker compose` 的变量替换。
 - 若你要多账号分别注入环境变量，可用账号前缀：`FEISHU_<ACCOUNT>_APP_ID`、`FEISHU_<ACCOUNT>_CODEX_API_KEY`（例如 `FEISHU_ASSISTANT_APP_ID`）。
+
+然后用 Compose 把环境变量写入配置文件：
+
+```bash
+docker compose run --rm suncodexclaw \
+  configure --account assistant --yes --from-env
+```
 
 如果你要检查配置是否能跑（不真正启动）：
 
 ```bash
-docker run --rm \
-  -v "$PWD/config:/app/config" \
-  -v "$PWD/.runtime:/app/.runtime" \
-  -v "$PWD/workspace:/workspace" \
-  ghcr.io/rainoffallingstar/SunCodexClaw:main \
-  preflight assistant
+docker compose run --rm suncodexclaw preflight assistant
 ```
 
 ### 4) 启动服务
 
 ```bash
-cp .env.example .env
 docker compose up -d
 docker compose logs -f
 ```

@@ -6,6 +6,9 @@ services:
     # Bind-mounted volumes need to be writable for persisting runtime state and bot_open_id.
     # If you hit permission errors, set SUNCODEXCLAW_UID/SUNCODEXCLAW_GID in .env to match your host user.
     user: "${SUNCODEXCLAW_UID:-1000}:${SUNCODEXCLAW_GID:-1000}"
+    # Business/runtime config is loaded from app.env when present.
+    env_file:
+      - ./app.env
     environment:
       # Optional health server
       SUNCODEXCLAW_HEALTH_ADDR: ":${HEALTH_PORT:-8080}"
