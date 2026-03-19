@@ -1,120 +1,121 @@
 # SunCodexClaw
 
-把飞书消息 → Codex CLI 执行（读写工作区/跑命令/产出文件）→ 结果/附件/云文档进度回写飞书。
+把飞书消息接到容器内，调用 Codex CLI 执行任务，再把结果、附件和进度回写飞书。
 
-控制面是 Go：`suncodexclawd`（统一 `ctl` 命令）；执行面在容器里跑 Node 机器人脚本（镜像已内置依赖和 `codex` CLI）。
+推荐用 Docker Compose 部署。仓库内已经包含镜像、配置向导和常用管理命令。
 
-![Quick Start](docs/images/quickstart-terminal.svg)
-
-## 快速开始（Docker Compose，推荐）
-
-前提：
+## 你需要准备
 
 - Docker / Docker Compose
-- 一个飞书企业自建应用（启用机器人 + 事件订阅 WebSocket）
-- 一套可用的 Codex/OpenAI 凭据（推荐写进 `config/secrets/local.yaml` 的 `codex.api_key`）
+- 一个飞书企业自建应用
+- 可用的 Codex / OpenAI 凭据
 
-### 1) 拉取仓库（拿到 compose 与配置模板）
+飞书应用至少要满足这些条件：
+
+- 启用机器人能力
+- 事件与回调使用“长连接”
+- 订阅事件 `im.message.receive_v1`
+- 每次修改订阅配置后发布应用版本
+
+## 快速开始
+
+### 1. 拉取仓库
 
 ```bash
 git clone https://github.com/rainoffallingstar/SunCodexClaw.git
 cd SunCodexClaw
 ```
 
-### 2) 准备目录与模板
-
-建议把容器内工作区固定为 `/workspace`，后续把每个账号的 `codex.cwd` 写成 `/workspace`（或 `/workspace/<repo>`）。
+### 2. 准备目录和环境文件
 
 ```bash
-mkdir -p .codex config .runtime workspace
-cp config/secrets/local.example.yaml config/secrets/local.yaml
-cp config/feishu/default.example.json config/feishu/default.json
-cp config/feishu/default.example.json config/feishu/assistant.json
-```
-
-目录说明：
-
-- `.codex`：可选。若你只用 `codex.api_key`，可以不挂载；若你要在容器里 `codex login`、用 profiles/skills，建议挂载。
-- `config`：必挂载。包含 `local.yaml`（敏感项）和每个机器人账号的覆盖配置 `config/feishu/<account>.json`。
-- `.runtime`：必挂载。用于日志/pid/自动探测到的 `bot_open_id` 等运行态持久化。
-- `workspace`：必挂载。你的真实工作目录（代码库/文件）将映射到容器内 `/workspace`。
-
-### 3) 交互式补齐缺失配置（推荐）
-
-向导会“发现缺失项 → 逐个询问 → 按推荐拆分写入”：
-
-- `config/secrets/local.yaml`：敏感项（飞书密钥、`codex.api_key`、可选 `codex.base_url`）
-- `config/feishu/<account>.json`：非敏感运行项（如 `bot_name`、`progress`、`codex.cwd/add_dirs` 等）
-
-先准备两个环境文件：
-
-- `.env`：给 `docker compose` 自己做变量替换（镜像标签、端口、挂载路径、UID/GID）
-- `app.env`：给容器内业务进程使用（`FEISHU_*`、`OPENAI_*`、`CODEX_*`）
-
-```bash
+mkdir -p .codex config/feishu config/secrets .runtime workspace
 cp .env.example .env
 cp app.env.example app.env
 ```
 
-`.env` 示例：
-
-```bash
-cat > .env <<'EOF'
-GITHUB_REPOSITORY=rainoffallingstar/suncodexclaw
-IMAGE_TAG=main
-WORKSPACE_PATH=./workspace
-HEALTH_PORT=8080
-SUNCODEXCLAW_UID=1000
-SUNCODEXCLAW_GID=1000
-EOF
-```
-
-`app.env` 示例：
-
-```bash
-cat > app.env <<'EOF'
-FEISHU_APP_ID=cli_xxx
-FEISHU_APP_SECRET=...
-FEISHU_ENCRYPT_KEY=...
-FEISHU_VERIFICATION_TOKEN=...
-FEISHU_BOT_NAME=飞书 Codex 助手
-FEISHU_CODEX_API_KEY=sk-...
-FEISHU_CODEX_BASE_URL=https://api.openai.com/v1
-FEISHU_CODEX_CWD=/workspace
-FEISHU_CODEX_MODEL=gpt-5.4
-FEISHU_CODEX_REASONING_EFFORT=xhigh
-FEISHU_PROGRESS_MODE=doc
-FEISHU_PROGRESS_DOC_TITLE_PREFIX=AI 助手｜任务进度
-EOF
-```
-
 说明：
 
-- 仓库内置的 `docker-compose.yml` 已经通过 `env_file:` 读取 `./app.env`，所以 `docker compose run/up` 时容器会自动拿到这些变量。
-- `.env` 仍然只影响 `docker compose` 的变量替换。
-- 若你要多账号分别注入环境变量，可用账号前缀：`FEISHU_<ACCOUNT>_APP_ID`、`FEISHU_<ACCOUNT>_CODEX_API_KEY`（例如 `FEISHU_ASSISTANT_APP_ID`）。
+- `.env` 给 `docker compose` 自己做变量替换
+- `app.env` 注入容器内，供配置向导和机器人进程读取
+- `workspace` 会挂载到容器内的 `/workspace`
 
-然后用 Compose 把环境变量写入配置文件：
+### 3. 填写环境变量
+
+最少需要在 `app.env` 里填写：
+
+```dotenv
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
+FEISHU_ENCRYPT_KEY=xxx
+FEISHU_VERIFICATION_TOKEN=xxx
+FEISHU_BOT_NAME=openclaw
+FEISHU_CODEX_API_KEY=sk-xxx
+FEISHU_CODEX_CWD=/workspace
+```
+
+常见可选项：
+
+```dotenv
+FEISHU_CODEX_BASE_URL=https://api.openai.com/v1
+FEISHU_CODEX_MODEL=gpt-5.2
+FEISHU_CODEX_REASONING_EFFORT=high
+FEISHU_PROGRESS_MODE=doc
+FEISHU_PROGRESS_DOC_TITLE_PREFIX=AI 助手｜任务进度
+```
+
+如果宿主机和容器写文件权限不一致，可以在 `.env` 里设置：
+
+```dotenv
+SUNCODEXCLAW_UID=1000
+SUNCODEXCLAW_GID=1000
+WORKSPACE_PATH=./workspace
+HEALTH_PORT=8080
+```
+
+### 4. 生成配置文件
 
 ```bash
 docker compose run --rm suncodexclaw \
   configure --account assistant --yes --from-env
 ```
 
-如果你要检查配置是否能跑（不真正启动）：
+这一步会生成或更新：
+
+- `config/secrets/local.yaml`
+- `config/feishu/assistant.json`
+
+### 5. 预检查
 
 ```bash
 docker compose run --rm suncodexclaw preflight assistant
 ```
 
-### 4) 启动服务
+### 6. 启动服务
 
 ```bash
 docker compose up -d
 docker compose logs -f
 ```
 
-### 5) 日常管理（Go ctl）
+## 验证是否正常
+
+启动成功后，日志里应该能看到：
+
+- `FEISHU_WS_BOT_RUNNING`
+- `ws client ready`
+
+然后做两次测试：
+
+1. 私聊机器人发一条消息
+2. 群里 `@机器人` 再发一条消息
+
+你当前默认配置下：
+
+- 私聊不需要 `@`
+- 群聊需要 `@`
+
+## 常用命令
 
 ```bash
 docker compose exec suncodexclaw suncodexclawd list
@@ -124,141 +125,70 @@ docker compose exec suncodexclaw suncodexclawd restart assistant
 docker compose exec suncodexclaw suncodexclawd stop all
 ```
 
-如果你不使用 compose，也可以直接 `docker run`：
+## 配置文件说明
+
+推荐把配置拆成两层：
+
+- `config/secrets/local.yaml`
+  - 放敏感项，如飞书密钥、`codex.api_key`
+- `config/feishu/<account>.json`
+  - 放运行项，如 `bot_name`、`progress`、`codex.cwd`
+
+常用字段：
+
+- `bot_name`
+- `require_mention`
+- `require_mention_group_only`
+- `codex.cwd`
+- `codex.add_dirs`
+- `codex.model`
+- `codex.reasoning_effort`
+- `progress.mode`
+
+## 常见问题
+
+### 机器人已启动，但没有任何回复
+
+先看日志里有没有 `FEISHU_EVENT`：
+
+- 没有 `FEISHU_EVENT`
+  - 飞书没有把消息事件发过来
+  - 优先检查是否订阅了 `im.message.receive_v1`
+- 有 `FEISHU_EVENT`，但出现 `skip_reason=require_mention_not_met`
+  - 群里没有正确 `@` 机器人
+- 有 `reply=error mode=codex`
+  - 飞书收消息正常，但 Codex/OpenAI 调用或回写失败
+
+### `configure --from-env` 之后配置还是示例值
+
+`configure --from-env` 只会填“缺失项”，不会覆盖已有值。
+
+如果你之前把示例文件直接复制成了正式配置文件，请先删掉或手工改掉占位值，再重新执行：
 
 ```bash
-docker run --rm \
-  -v "$PWD/.codex:/home/node/.codex" \
-  -v "$PWD/config:/app/config" \
-  -v "$PWD/.runtime:/app/.runtime" \
-  -v "$PWD/workspace:/workspace" \
-  ghcr.io/rainoffallingstar/suncodexclaw:main start
+mv config/secrets/local.yaml config/secrets/local.yaml.bak
+docker compose run --rm suncodexclaw \
+  configure --account assistant --yes --from-env
 ```
 
-## 配置文件布局（推荐）
+### GHCR 镜像名大小写报错
 
-![Config Layout](docs/images/config-layout.svg)
-
-### `config/secrets/local.yaml`（敏感项主配置）
-
-这是推荐的主配置位置，尤其是敏感项：
-
-```yaml
-config:
-  feishu:
-    assistant:
-      app_id: "cli_xxx"
-      app_secret: "..."
-      encrypt_key: "..."
-      verification_token: "..."
-      bot_open_id: "ou_xxx" # 可选：也可在第一次成功 @ 后自动探测并持久化
-      bot_name: "飞书 Codex 助手"
-      domain: "feishu"
-      reply_mode: "codex"
-      reply_prefix: "AI 助手："
-      require_mention: true
-      require_mention_group_only: true
-      progress:
-        enabled: true
-        mode: "doc"
-        doc:
-          title_prefix: "AI 助手｜任务进度"
-          share_to_chat: true
-          link_scope: "same_tenant"
-          include_user_message: true
-          write_final_reply: true
-      codex:
-        bin: "codex"
-        api_key: "sk-..."
-        base_url: "https://api.openai.com/v1" # 可选：自建网关/代理可改这里
-        model: "gpt-5.4"
-        reasoning_effort: "xhigh"
-        cwd: "/workspace"
-        add_dirs: []
-        history_turns: 6
-        sandbox: "danger-full-access"
-        approval_policy: "never"
-```
-
-### `config/feishu/<account>.json`（非敏感覆盖）
-
-这个文件适合放“每台机器不一样”的运行参数：
-
-```json
-{
-  "bot_name": "AI 助手",
-  "reply_mode": "codex",
-  "reply_prefix": "AI 助手：",
-  "require_mention": true,
-  "require_mention_group_only": true,
-  "progress": {
-    "enabled": true,
-    "mode": "doc",
-    "doc": { "title_prefix": "AI 助手｜任务进度" }
-  },
-  "codex": {
-    "cwd": "/workspace",
-    "add_dirs": []
-  }
-}
-```
-
-配置建议：
-
-- 密钥尽量只放 `local.yaml`
-- `config/feishu/<account>.json` 留给运行参数覆盖
-- 部署时优先显式填写 `bot_name`（群里 @ 识别更稳定）
-- 每个机器人单独配置 `codex.cwd`
-- 如果需要跨多个目录工作，可以额外配置 `codex.add_dirs`
-- `bot_open_id` 可以不手填；群里第一次成功 @ 机器人后会自动探测并持久化
-- 如果你已经通过 `codex login` 登录，也可以不填 `codex.api_key`
-
-## 常用部署细节
-
-### 固定工作目录（容器内）
-
-推荐约定：
-
-- 把宿主机工作区挂载到 `/workspace`
-- 把每个账号的 `codex.cwd` 写成 `/workspace`（或 `/workspace/<repo>`）
-- 需要跨目录再配置 `codex.add_dirs`
-
-### Codex Base URL（自建网关/代理）
-
-优先级（从高到低）：
-
-1. CLI 参数：`--codex-base-url`
-2. 环境变量：`FEISHU_CODEX_BASE_URL` / `OPENAI_BASE_URL` / `OPENAI_API_BASE`
-3. 配置：`codex.base_url`
-
-### 容器权限（避免 root/写权限问题）
-
-容器需要写入挂载目录以持久化 `.runtime/` 与（可选）配置落盘。
-
-`docker-compose.yml` 默认使用：
+镜像名必须是小写。默认镜像名是：
 
 ```text
-user: "${SUNCODEXCLAW_UID:-1000}:${SUNCODEXCLAW_GID:-1000}"
-```
-
-在 Linux 上如遇到权限问题，通常把 `.env` 里设置为当前用户即可：
-
-```bash
-echo "SUNCODEXCLAW_UID=$(id -u)" >> .env
-echo "SUNCODEXCLAW_GID=$(id -g)" >> .env
-docker compose up -d
+ghcr.io/rainoffallingstar/suncodexclaw:main
 ```
 
 ## Docker 镜像
-
-镜像由 GitHub Actions 自动构建并推送到 GHCR：
 
 ```bash
 docker pull ghcr.io/rainoffallingstar/suncodexclaw:main
 ```
 
-## Deprecated
+## 兼容脚本
 
-- `tools/install_feishu_launchagents.sh`：兼容 wrapper（已 deprecated），请改用 `suncodexclawd launchagents ...`
-- `tools/configure_docker_config.js`：旧的 Docker 配置向导（已 deprecated），请改用 `suncodexclawd configure`
-- `tools/feishu_bot_ctl.sh`：兼容 ctl 脚本（建议直接用 `suncodexclawd <cmd>`）
+这些脚本仍然保留，但新部署不推荐再用：
+
+- `tools/install_feishu_launchagents.sh`
+- `tools/configure_docker_config.js`
+- `tools/feishu_bot_ctl.sh`
