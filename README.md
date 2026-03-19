@@ -17,6 +17,111 @@
 - 订阅事件 `im.message.receive_v1`
 - 每次修改订阅配置后发布应用版本
 
+## 飞书应用权限
+
+当前项目实测可用的一套完整权限清单如下。
+
+- 这是“当前实测可用的完整权限集合”，不是严格收敛后的最小权限集合
+- 如果你是新部署，建议先按这份权限导入，跑通后再按需收缩
+
+<details>
+<summary>展开查看完整 scopes</summary>
+
+```json
+{
+  "scopes": {
+    "tenant": [
+      "aily:file:read",
+      "aily:file:write",
+      "application:application.app_message_stats.overview:readonly",
+      "application:application:self_manage",
+      "application:bot.menu:write",
+      "cardkit:card:write",
+      "contact:contact.base:readonly",
+      "contact:user.employee_id:readonly",
+      "corehr:file:download",
+      "docs:document.content:read",
+      "docx:document",
+      "docx:document.block:convert",
+      "docx:document:create",
+      "docx:document:readonly",
+      "docx:document:write_only",
+      "drive:drive",
+      "drive:drive.metadata:readonly",
+      "drive:drive.search:readonly",
+      "drive:drive:readonly",
+      "drive:drive:version",
+      "drive:drive:version:readonly",
+      "event:ip_list",
+      "im:app_feed_card:write",
+      "im:biz_entity_tag_relation:read",
+      "im:biz_entity_tag_relation:write",
+      "im:chat",
+      "im:chat.access_event.bot_p2p_chat:read",
+      "im:chat.announcement:read",
+      "im:chat.announcement:write_only",
+      "im:chat.chat_pins:read",
+      "im:chat.chat_pins:write_only",
+      "im:chat.collab_plugins:read",
+      "im:chat.collab_plugins:write_only",
+      "im:chat.managers:write_only",
+      "im:chat.members:bot_access",
+      "im:chat.members:read",
+      "im:chat.members:write_only",
+      "im:chat.menu_tree:read",
+      "im:chat.menu_tree:write_only",
+      "im:chat.moderation:read",
+      "im:chat.tabs:read",
+      "im:chat.tabs:write_only",
+      "im:chat.top_notice:write_only",
+      "im:chat.widgets:read",
+      "im:chat.widgets:write_only",
+      "im:chat:create",
+      "im:chat:delete",
+      "im:chat:moderation:write_only",
+      "im:chat:operate_as_owner",
+      "im:chat:read",
+      "im:chat:readonly",
+      "im:chat:update",
+      "im:datasync.feed_card.time_sensitive:write",
+      "im:message",
+      "im:message.group_at_msg:readonly",
+      "im:message.group_msg",
+      "im:message.p2p_msg:readonly",
+      "im:message.pins:read",
+      "im:message.pins:write_only",
+      "im:message.reactions:read",
+      "im:message.reactions:write_only",
+      "im:message.urgent",
+      "im:message.urgent.status:write",
+      "im:message.urgent:phone",
+      "im:message.urgent:sms",
+      "im:message:readonly",
+      "im:message:recall",
+      "im:message:send_as_bot",
+      "im:message:send_multi_depts",
+      "im:message:send_multi_users",
+      "im:message:send_sys_msg",
+      "im:message:update",
+      "im:resource",
+      "im:tag:read",
+      "im:tag:write",
+      "im:url_preview.update",
+      "im:user_agent:read",
+      "sheets:spreadsheet",
+      "wiki:wiki:readonly"
+    ],
+    "user": [
+      "aily:file:read",
+      "aily:file:write",
+      "im:chat.access_event.bot_p2p_chat:read"
+    ]
+  }
+}
+```
+
+</details>
+
 ## 快速开始
 
 ### 1. 拉取仓库
