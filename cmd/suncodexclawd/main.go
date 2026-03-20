@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"suncodexclaw/internal/memory"
 	"suncodexclaw/internal/supervisor"
 	"suncodexclaw/internal/timer"
 	"suncodexclaw/internal/updater"
@@ -48,6 +49,8 @@ func main() {
 		configure(os.Args[2:])
 	case "timer":
 		timerCmd(os.Args[2:])
+	case "memory":
+		memoryCmd(os.Args[2:])
 	case "update":
 		updateCmd(os.Args[2:])
 	default:
@@ -66,6 +69,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  suncodexclawd logs <account|all> [--account a] [--follow|-f] [--lines 120] [--no-launchctl]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd preflight [account|all] [--account a] [--account b] [--no-launchctl]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd timer <start|list|show|upsert|delete|run>")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory <add|list|show|search|delete>")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd update [--repo owner/repo] [--version vX.Y.Z] [--bin /path/to/suncodexclawd] [--check] [--dry-run]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd launchagents <install|uninstall|status> [account|all] [--account a] [--account b] [--node-bin node] [--prefix com.sunbelife.suncodexclaw.feishu] [--run-mode node|supervisor] [--daemon-bin ./bin/suncodexclawd] [--codex-bin <path>] [--codex-home <path>] [--path <PATH>] [--keepalive] [--throttle-interval 10]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd configure [--account assistant] [--yes]")
@@ -611,6 +615,30 @@ func timerCmd(args []string) {
 	}
 }
 
+func memoryCmd(args []string) {
+	if len(args) == 0 {
+		memoryUsage()
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "add":
+		memoryAdd(args[1:])
+	case "list":
+		memoryList(args[1:])
+	case "show":
+		memoryShow(args[1:])
+	case "search":
+		memorySearch(args[1:])
+	case "delete":
+		memoryDelete(args[1:])
+	case "help", "--help", "-h":
+		memoryUsage()
+	default:
+		memoryUsage()
+		os.Exit(2)
+	}
+}
+
 func timerUsage() {
 	fmt.Fprintln(os.Stderr, "Timer Usage:")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd timer start [--node-bin node] [--repo .] [--poll-interval 30s]")
@@ -622,6 +650,15 @@ func timerUsage() {
 	fmt.Fprintln(os.Stderr, "  suncodexclawd timer disable <id> [--repo .]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd timer delete <id> [--repo .]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd timer upsert --id <id> --account assistant --chat-id oc_xxx (--every 1h | --daily 09:00 | --weekly mon,tue --at 09:00) --prompt \"...\" [--cwd /workspace] [--add-dir /workspace/other] [--tz Asia/Shanghai] [--disable]")
+}
+
+func memoryUsage() {
+	fmt.Fprintln(os.Stderr, "Memory Usage:")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory add --text \"...\" [--source feishu/assistant/oc_xxx] [--tag foo] [--tag bar] [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory list [--repo .] [--limit 20]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory show <id> [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory search <keyword> [--repo .] [--limit 20]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory delete <id> [--repo .]")
 }
 
 func timerStart(args []string) {
@@ -874,6 +911,132 @@ func timerUpsert(args []string) {
 	fmt.Printf("upserted=%s schedule=%s chat_id=%s enabled=%t\n", task.ID, timerScheduleSummary(task.Schedule), task.ChatID, task.Enabled)
 }
 
+func memoryAdd(args []string) {
+	fs := flag.NewFlagSet("memory add", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	text := fs.String("text", "", "memory text")
+	textFile := fs.String("text-file", "", "memory text file")
+	source := fs.String("source", "", "memory source label")
+	var tags multiFlag
+	fs.Var(&tags, "tag", "memory tag (repeatable)")
+	_ = fs.Parse(args)
+
+	repo := resolveRepoRoot(*repoFlag)
+	memoryText := strings.TrimSpace(*text)
+	if strings.TrimSpace(*textFile) != "" {
+		b, err := os.ReadFile(*textFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		memoryText = strings.TrimSpace(string(b))
+	}
+	if memoryText == "" && fs.NArg() > 0 {
+		memoryText = strings.TrimSpace(strings.Join(fs.Args(), " "))
+	}
+	if memoryText == "" {
+		fmt.Fprintln(os.Stderr, "error: memory text is required")
+		os.Exit(2)
+	}
+	store := memory.NewStore(repo)
+	entry, err := store.Add(memoryText, *source, tags)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("added=%s source=%s tags=%s text=%s\n", entry.ID, emptyFallback(entry.Source, "(none)"), emptyFallback(strings.Join(entry.Tags, ","), "(none)"), compactSingleLine(entry.Text, 120))
+}
+
+func memoryList(args []string) {
+	fs := flag.NewFlagSet("memory list", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	limit := fs.Int("limit", 20, "max memories to show")
+	_ = fs.Parse(args)
+	repo := resolveRepoRoot(*repoFlag)
+	store := memory.NewStore(repo)
+	entries, err := store.ListEntries()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if len(entries) == 0 {
+		fmt.Println("(no memories)")
+		return
+	}
+	for i, entry := range entries {
+		if i >= *limit {
+			break
+		}
+		fmt.Println(memorySummaryLine(entry))
+	}
+}
+
+func memoryShow(args []string) {
+	fs := flag.NewFlagSet("memory show", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		memoryUsage()
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	store := memory.NewStore(repo)
+	entry, err := store.ReadEntry(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	body, err := json.MarshalIndent(entry, "", "  ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(body))
+}
+
+func memorySearch(args []string) {
+	fs := flag.NewFlagSet("memory search", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	limit := fs.Int("limit", 20, "max memories to show")
+	_ = fs.Parse(args)
+	query := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	if query == "" {
+		fmt.Fprintln(os.Stderr, "error: search keyword is required")
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	store := memory.NewStore(repo)
+	entries, err := store.Search(query, *limit)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if len(entries) == 0 {
+		fmt.Println("(no matched memories)")
+		return
+	}
+	for _, entry := range entries {
+		fmt.Println(memorySummaryLine(entry))
+	}
+}
+
+func memoryDelete(args []string) {
+	fs := flag.NewFlagSet("memory delete", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		memoryUsage()
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	store := memory.NewStore(repo)
+	if err := store.DeleteEntry(fs.Arg(0)); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("deleted=%s\n", fs.Arg(0))
+}
+
 func buildTimerSchedule(every, daily, weekly, at, tz string) (timer.Schedule, error) {
 	count := 0
 	for _, raw := range []string{every, daily, weekly} {
@@ -938,6 +1101,28 @@ func emptyFallback(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func compactSingleLine(value string, max int) string {
+	text := strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if max <= 0 || len(text) <= max {
+		return text
+	}
+	if max <= 3 {
+		return text[:max]
+	}
+	return text[:max-3] + "..."
+}
+
+func memorySummaryLine(entry memory.Entry) string {
+	return fmt.Sprintf(
+		"%s updated=%s source=%s tags=%s text=%s",
+		entry.ID,
+		emptyFallback(strings.TrimSpace(entry.UpdatedAt), emptyFallback(strings.TrimSpace(entry.CreatedAt), "(unknown)")),
+		emptyFallback(entry.Source, "(none)"),
+		emptyFallback(strings.Join(entry.Tags, ","), "(none)"),
+		compactSingleLine(entry.Text, 120),
+	)
 }
 
 func launchagents(args []string) {

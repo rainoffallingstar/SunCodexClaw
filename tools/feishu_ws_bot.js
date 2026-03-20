@@ -41,6 +41,12 @@ const DEFAULT_TIMER_SYSTEM_GUIDE = [
   '如果用户没有指定发送目标，默认把 `--chat-id` 设为当前聊天的 chat_id。',
   '如果用户没有指定账号，默认把 `--account` 设为当前机器人账号。',
 ].join('\n');
+const DEFAULT_MEMORY_SYSTEM_GUIDE = [
+  '记忆系统：如果用户提到 /memory、记住、保存偏好、回忆历史约定，优先使用 `suncodexclawd memory ...` 管理内置 memory 系统。',
+  '添加记忆使用 `suncodexclawd memory add --text \"...\"`，检索使用 `suncodexclawd memory search <关键词>`。',
+  '先用 `suncodexclawd memory search <关键词>` 或 `suncodexclawd memory list` 查看已有记忆，避免重复写入。',
+  '如果用户要求“记住这件事”，优先把明确、长期有效的偏好或规则写进 memory。',
+].join('\n');
 const MAX_IMAGE_INPUTS = 6;
 const FEISHU_TEXT_CHUNK_LIMIT = 4000;
 const FEISHU_MARKDOWN_CARD_CHUNK_LIMIT = 4000;
@@ -2042,6 +2048,59 @@ function parseTimerCommand(text) {
   return null;
 }
 
+function parseMemoryCommand(text) {
+  const raw = normalizeCommandText(text);
+  if (!raw) return null;
+
+  if (/^\/memories$/i.test(raw)) return { type: 'list' };
+  if (!/^\/memory(?:\s|$)/i.test(raw)) return null;
+
+  if (/^\/memory(?:\s+help)?$/i.test(raw)) return { type: 'help' };
+  if (/^\/memory\s+list$/i.test(raw)) return { type: 'list' };
+
+  const searchMatch = raw.match(/^\/memory\s+search\s+(.+)$/i);
+  if (searchMatch) {
+    return {
+      type: 'search',
+      query: String(searchMatch[1] || '').trim(),
+    };
+  }
+
+  const showMatch = raw.match(/^\/memory\s+show\s+(.+)$/i);
+  if (showMatch) {
+    return {
+      type: 'show',
+      target: String(showMatch[1] || '').trim(),
+    };
+  }
+
+  const deleteMatch = raw.match(/^\/memory\s+(?:delete|remove)\s+(.+)$/i);
+  if (deleteMatch) {
+    return {
+      type: 'delete',
+      target: String(deleteMatch[1] || '').trim(),
+    };
+  }
+
+  const addMatch = raw.match(/^\/memory\s+add\s+(.+)$/i);
+  if (addMatch) {
+    return {
+      type: 'add',
+      text: String(addMatch[1] || '').trim(),
+    };
+  }
+
+  const bareText = raw.replace(/^\/memory\s+/i, '').trim();
+  if (bareText) {
+    return {
+      type: 'add',
+      text: bareText,
+    };
+  }
+
+  return { type: 'help' };
+}
+
 function formatTimerHelp() {
   return [
     '定时任务命令：',
@@ -2057,6 +2116,22 @@ function formatTimerHelp() {
     '',
     '复杂创建或修改也可以直接发自然语言，例如：',
     '/timer 创建一个每天 09:00 执行的日报任务，目录 /workspace，结果发回当前会话',
+  ].join('\n');
+}
+
+function formatMemoryHelp() {
+  return [
+    '记忆命令：',
+    '/memory <要记住的内容>',
+    '/memory add <要记住的内容>',
+    '/memory list',
+    '/memory search <关键词>',
+    '/memory show <记忆ID>',
+    '/memory delete <记忆ID>',
+    '',
+    '示例：',
+    '/memory 以后默认用简体中文回复',
+    '/memory search 中文',
   ].join('\n');
 }
 
@@ -2097,6 +2172,28 @@ function runTimerAdminCommand(args = [], { timeoutMs = 30000 } = {}) {
   return compactText(combined || 'ok', 4000);
 }
 
+function runMemoryAdminCommand(args = [], { timeoutMs = 30000 } = {}) {
+  const repoRoot = path.resolve(__dirname, '..');
+  const cmdArgs = ['memory', ...args, '--repo', repoRoot];
+  const result = spawnSync(resolveDaemonBin(), cmdArgs, {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    env: process.env,
+  });
+  if (result.error) {
+    throw new Error(`memory command failed: ${result.error.message}`);
+  }
+  const combined = [String(result.stdout || ''), String(result.stderr || '')]
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+  if (result.status !== 0) {
+    throw new Error(compactText(combined || `exit=${result.status}`, 1200));
+  }
+  return compactText(combined || 'ok', 4000);
+}
+
 function handleTimerCommand(command) {
   if (!command) return { handled: false, reply: '' };
   if (command.type === 'help') {
@@ -2122,6 +2219,50 @@ function handleTimerCommand(command) {
   return {
     handled: true,
     reply: runTimerAdminCommand(args),
+  };
+}
+
+function handleMemoryCommand(command, { accountName = '', chatID = '' } = {}) {
+  if (!command) return { handled: false, reply: '' };
+  if (command.type === 'help') {
+    return { handled: true, reply: formatMemoryHelp() };
+  }
+  if (command.type === 'list') {
+    return { handled: true, reply: runMemoryAdminCommand(['list']) };
+  }
+  if (command.type === 'search') {
+    const query = String(command.query || '').trim();
+    if (!query) {
+      return { handled: true, reply: '缺少搜索关键词。请用 /memory help 查看命令格式。' };
+    }
+    return { handled: true, reply: runMemoryAdminCommand(['search', query]) };
+  }
+  if (command.type === 'add') {
+    const text = String(command.text || '').trim();
+    if (!text) {
+      return { handled: true, reply: '缺少记忆内容。请用 /memory help 查看命令格式。' };
+    }
+    const sourceParts = ['feishu'];
+    if (String(accountName || '').trim()) sourceParts.push(String(accountName || '').trim());
+    if (String(chatID || '').trim()) sourceParts.push(String(chatID || '').trim());
+    return {
+      handled: true,
+      reply: runMemoryAdminCommand(['add', '--text', text, '--source', sourceParts.join('/')]),
+    };
+  }
+  const target = String(command.target || '').trim();
+  if (!target) {
+    return { handled: true, reply: '缺少记忆 ID。请用 /memory help 查看命令格式。' };
+  }
+  const argsByType = {
+    show: ['show', target],
+    delete: ['delete', target],
+  };
+  const args = argsByType[command.type];
+  if (!args) return { handled: false, reply: '' };
+  return {
+    handled: true,
+    reply: runMemoryAdminCommand(args),
   };
 }
 
@@ -2406,6 +2547,8 @@ function buildCodexPrompt({
   lines.push('');
   lines.push(DEFAULT_TIMER_SYSTEM_GUIDE);
   lines.push('');
+  lines.push(DEFAULT_MEMORY_SYSTEM_GUIDE);
+  lines.push('');
   lines.push(`当前机器人账号：${accountName || '(unknown)'}`);
   lines.push(`当前聊天 chat_id：${chatID || '(unknown)'}`);
   lines.push(`当前工作目录：${cwd || process.cwd()}`);
@@ -2449,6 +2592,8 @@ function buildCodexResumePrompt({ userText, imageCount = 0, accountName = '', ch
   lines.push('继续当前线程。下面是用户最新消息，请直接回复用户。');
   lines.push('');
   lines.push(DEFAULT_TIMER_SYSTEM_GUIDE);
+  lines.push('');
+  lines.push(DEFAULT_MEMORY_SYSTEM_GUIDE);
   lines.push('');
   lines.push(`当前机器人账号：${accountName || '(unknown)'}`);
   lines.push(`当前聊天 chat_id：${chatID || '(unknown)'}`);
@@ -4442,6 +4587,22 @@ async function main() {
 
     const chatState = ensureChatState(chatStates, conversationScope.stateKey || chatID);
     if (messageType === 'text') {
+      const memoryCommand = parseMemoryCommand(userText);
+      if (memoryCommand) {
+        try {
+          const result = handleMemoryCommand(memoryCommand, { accountName, chatID });
+          if (result.handled) {
+            await sendTextReplySafe(client, chatID, result.reply, 'memory_reply');
+            console.log(`reply=ok mode=memory_command type=${memoryCommand.type}`);
+            return;
+          }
+        } catch (err) {
+          await sendTextReplySafe(client, chatID, `记忆命令执行失败：${err.message}`, 'memory_reply');
+          console.error(`reply=error mode=memory_command type=${memoryCommand.type} message=${err.message}`);
+          return;
+        }
+      }
+
       const timerCommand = parseTimerCommand(userText);
       if (timerCommand) {
         try {

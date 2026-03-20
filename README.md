@@ -228,6 +228,7 @@ docker compose exec suncodexclaw suncodexclawd status all
 docker compose exec suncodexclaw suncodexclawd logs assistant -f
 docker compose exec suncodexclaw suncodexclawd restart assistant
 docker compose exec suncodexclaw suncodexclawd stop all
+docker compose exec suncodexclaw suncodexclawd memory search 中文
 docker compose exec suncodexclaw suncodexclawd update --check
 ```
 
@@ -337,6 +338,50 @@ docker compose exec suncodexclaw suncodexclawd timer upsert \
 其中 `list/show/run/logs/enable/disable/delete` 这类格式化命令会直接调用本地 `suncodexclawd timer ...`。
 
 更复杂的自然语言 `/timer ...` 请求会交给机器人翻译成对应的 `suncodexclawd timer ...` 命令来执行。
+
+## 记忆系统
+
+当前版本内置了 `suncodexclawd memory` 子系统，用来保存长期有效的偏好、约定和检索线索。
+
+- 记忆条目保存在 `config/memory/entries/*.json`
+- 适合存放“以后默认怎么做”这类长期规则，不适合存放临时上下文
+- `search` 目前是大小写不敏感的关键词检索，按匹配度和更新时间排序
+
+常用命令：
+
+```bash
+docker compose exec suncodexclaw suncodexclawd memory add --text "以后默认用简体中文回复"
+docker compose exec suncodexclaw suncodexclawd memory list
+docker compose exec suncodexclaw suncodexclawd memory search 中文
+docker compose exec suncodexclaw suncodexclawd memory show mem-20260320-090000-000
+docker compose exec suncodexclaw suncodexclawd memory delete mem-20260320-090000-000
+```
+
+也可以直接在宿主机执行：
+
+```bash
+suncodexclawd memory add --text "以后默认输出简洁结论"
+suncodexclawd memory search 简洁
+```
+
+## 飞书里的 `/memory`
+
+机器人默认会被告知如何使用 `suncodexclawd memory`。
+
+你可以直接在飞书里发送 `/memory ...` 管理记忆，例如：
+
+- `/memory 以后默认用简体中文回复`
+- `/memory add 代码修改后默认顺手跑测试`
+- `/memory list`
+- `/memory search 中文`
+- `/memory show mem-20260320-090000-000`
+- `/memory delete mem-20260320-090000-000`
+
+其中：
+
+- `/memory <内容>` 和 `/memory add <内容>` 会直接写入本地 memory 存储
+- `/memory search <关键词>` 会直接调用本地 `suncodexclawd memory search`
+- 新增记忆时会自动记录来源，格式类似 `feishu/<account>/<chat_id>`
 
 ## 配置文件说明
 
