@@ -33,6 +33,7 @@ COPY . .
 
 COPY --from=go-build /out/suncodexclawd /app/bin/suncodexclawd
 RUN chmod +x /app/bin/suncodexclawd
+RUN ln -sf /app/bin/suncodexclawd /usr/local/bin/suncodexclawd
 
 RUN chmod +x /app/tools/docker_entrypoint.sh
 

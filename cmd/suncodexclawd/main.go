@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,11 +11,14 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
 	"suncodexclaw/internal/supervisor"
+	"suncodexclaw/internal/timer"
+	"suncodexclaw/internal/updater"
 	"suncodexclaw/internal/wizard"
 )
 
@@ -42,6 +46,10 @@ func main() {
 		launchagents(os.Args[2:])
 	case "configure":
 		configure(os.Args[2:])
+	case "timer":
+		timerCmd(os.Args[2:])
+	case "update":
+		updateCmd(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -57,6 +65,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  suncodexclawd list")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd logs <account|all> [--account a] [--follow|-f] [--lines 120] [--no-launchctl]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd preflight [account|all] [--account a] [--account b] [--no-launchctl]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer <start|list|show|upsert|delete|run>")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd update [--repo owner/repo] [--version vX.Y.Z] [--bin /path/to/suncodexclawd] [--check] [--dry-run]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd launchagents <install|uninstall|status> [account|all] [--account a] [--account b] [--node-bin node] [--prefix com.sunbelife.suncodexclaw.feishu] [--run-mode node|supervisor] [--daemon-bin ./bin/suncodexclawd] [--codex-bin <path>] [--codex-home <path>] [--path <PATH>] [--keepalive] [--throttle-interval 10]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd configure [--account assistant] [--yes]")
 }
@@ -116,6 +126,16 @@ func start(args []string) {
 	if strings.TrimSpace(*healthAddr) != "" {
 		go serveHealth(*healthAddr, sup, accts)
 	}
+	timerMgr := timer.NewManager(timer.Options{
+		RepoRoot: repo,
+		NodeBin:  *nodeBin,
+		Output:   os.Stdout,
+	})
+	go func() {
+		if err := timerMgr.Run(ctx); err != nil && ctx.Err() == nil {
+			fmt.Fprintln(os.Stderr, "timer error:", err)
+		}
+	}()
 
 	lines, err := sup.StartReport(accts)
 	if err != nil {
@@ -513,6 +533,411 @@ func configure(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+func updateCmd(args []string) {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	repo := fs.String("repo", "rainoffallingstar/SunCodexClaw", "github repo in owner/name form")
+	version := fs.String("version", "", "optional release tag; default uses latest release")
+	binPath := fs.String("bin", "", "target binary path; default is current executable")
+	check := fs.Bool("check", false, "show the selected release asset without replacing the binary")
+	dryRun := fs.Bool("dry-run", false, "download metadata only; do not replace the binary")
+	_ = fs.Parse(args)
+
+	result, err := updater.Run(context.Background(), updater.Options{
+		Repo:       *repo,
+		Version:    *version,
+		BinaryPath: *binPath,
+		CheckOnly:  *check,
+		DryRun:     *dryRun,
+		Output:     os.Stdout,
+		Executable: executableNameForRuntime(),
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("repo=%s\n", result.Repo)
+	fmt.Printf("version=%s\n", result.Version)
+	fmt.Printf("asset=%s\n", result.AssetName)
+	fmt.Printf("download=%s\n", result.DownloadURL)
+	fmt.Printf("binary=%s\n", result.BinaryPath)
+	if *check || *dryRun {
+		fmt.Println("status=check_only")
+		return
+	}
+	fmt.Printf("status=updated replaced=%s\n", result.ReplacedPath)
+	fmt.Println("next_step=restart_required")
+	fmt.Println("hint=更新已写入本地二进制；请重启当前服务或重新启动进程后生效。")
+}
+
+func executableNameForRuntime() string {
+	name := "suncodexclawd"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return name
+}
+
+func timerCmd(args []string) {
+	if len(args) == 0 {
+		timerUsage()
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "start":
+		timerStart(args[1:])
+	case "list":
+		timerList(args[1:])
+	case "show":
+		timerShow(args[1:])
+	case "upsert":
+		timerUpsert(args[1:])
+	case "enable":
+		timerEnableDisable(args[1:], true)
+	case "disable":
+		timerEnableDisable(args[1:], false)
+	case "delete":
+		timerDelete(args[1:])
+	case "run":
+		timerRun(args[1:])
+	case "logs":
+		timerLogs(args[1:])
+	case "help", "--help", "-h":
+		timerUsage()
+	default:
+		timerUsage()
+		os.Exit(2)
+	}
+}
+
+func timerUsage() {
+	fmt.Fprintln(os.Stderr, "Timer Usage:")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer start [--node-bin node] [--repo .] [--poll-interval 30s]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer list [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer show <id> [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer run <id> [--node-bin node] [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer logs <id> [--repo .] [--lines 80]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer enable <id> [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer disable <id> [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer delete <id> [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer upsert --id <id> --account assistant --chat-id oc_xxx (--every 1h | --daily 09:00 | --weekly mon,tue --at 09:00) --prompt \"...\" [--cwd /workspace] [--add-dir /workspace/other] [--tz Asia/Shanghai] [--disable]")
+}
+
+func timerStart(args []string) {
+	fs := flag.NewFlagSet("timer start", flag.ExitOnError)
+	nodeBin := fs.String("node-bin", getenvDefault("NODE_BIN", "node"), "node binary")
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	pollInterval := fs.Duration("poll-interval", 30*time.Second, "poll interval")
+	_ = fs.Parse(args)
+	repo := resolveRepoRoot(*repoFlag)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sigs := make(chan os.Signal, 4)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		cancel()
+	}()
+	mgr := timer.NewManager(timer.Options{
+		RepoRoot:     repo,
+		NodeBin:      *nodeBin,
+		PollInterval: *pollInterval,
+		Output:       os.Stdout,
+	})
+	if err := mgr.Run(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+func timerList(args []string) {
+	fs := flag.NewFlagSet("timer list", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	_ = fs.Parse(args)
+	repo := resolveRepoRoot(*repoFlag)
+	store := timer.NewStore(repo)
+	tasks, err := store.ListTasks()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if len(tasks) == 0 {
+		fmt.Println("(no timers)")
+		return
+	}
+	now := time.Now()
+	for _, task := range tasks {
+		st, _ := store.ReadState(task.ID)
+		_, nextRun, _ := timer.NextDue(task, st, now)
+		nextText := st.NextRunAt
+		if nextText == "" && !nextRun.IsZero() {
+			nextText = nextRun.UTC().Format(time.RFC3339)
+		}
+		status := "enabled"
+		if !task.Enabled {
+			status = "disabled"
+		}
+		fmt.Printf("%s status=%s account=%s schedule=%s next=%s chat_id=%s\n", task.ID, status, task.Account, timerScheduleSummary(task.Schedule), emptyFallback(nextText, "(none)"), task.ChatID)
+	}
+}
+
+func timerShow(args []string) {
+	fs := flag.NewFlagSet("timer show", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		timerUsage()
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	store := timer.NewStore(repo)
+	task, err := store.ReadTask(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	st, _ := store.ReadState(task.ID)
+	out := map[string]any{
+		"task":  task,
+		"state": st,
+	}
+	body, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(body))
+}
+
+func timerDelete(args []string) {
+	fs := flag.NewFlagSet("timer delete", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		timerUsage()
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	store := timer.NewStore(repo)
+	if err := store.DeleteTask(fs.Arg(0)); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("deleted=%s\n", fs.Arg(0))
+}
+
+func timerEnableDisable(args []string, enabled bool) {
+	name := "timer enable"
+	if !enabled {
+		name = "timer disable"
+	}
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		timerUsage()
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	store := timer.NewStore(repo)
+	task, err := store.SetTaskEnabled(fs.Arg(0), enabled)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	action := "enabled"
+	if !enabled {
+		action = "disabled"
+	}
+	fmt.Printf("%s=%s schedule=%s\n", action, task.ID, timerScheduleSummary(task.Schedule))
+}
+
+func timerRun(args []string) {
+	fs := flag.NewFlagSet("timer run", flag.ExitOnError)
+	nodeBin := fs.String("node-bin", getenvDefault("NODE_BIN", "node"), "node binary")
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		timerUsage()
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	mgr := timer.NewManager(timer.Options{
+		RepoRoot: repo,
+		NodeBin:  *nodeBin,
+		Output:   os.Stdout,
+	})
+	if err := mgr.RunTaskNow(context.Background(), fs.Arg(0)); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("run=%s status=ok\n", fs.Arg(0))
+}
+
+func timerLogs(args []string) {
+	fs := flag.NewFlagSet("timer logs", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	lines := fs.Int("lines", 80, "lines to show")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		timerUsage()
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	store := timer.NewStore(repo)
+	text, err := store.ReadLogTail(fs.Arg(0), *lines)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if strings.TrimSpace(text) == "" {
+		fmt.Println("(no logs)")
+		return
+	}
+	fmt.Println(text)
+}
+
+func timerUpsert(args []string) {
+	fs := flag.NewFlagSet("timer upsert", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	id := fs.String("id", "", "timer id")
+	account := fs.String("account", "assistant", "feishu account name")
+	chatID := fs.String("chat-id", "", "destination chat id")
+	prompt := fs.String("prompt", "", "task prompt")
+	promptFile := fs.String("prompt-file", "", "task prompt file")
+	cwd := fs.String("cwd", "", "working directory")
+	every := fs.String("every", "", "interval schedule, e.g. 1h")
+	daily := fs.String("daily", "", "daily schedule time, e.g. 09:00")
+	weekly := fs.String("weekly", "", "weekly schedule weekdays, e.g. mon,tue,fri")
+	at := fs.String("at", "", "time for weekly schedule, e.g. 09:00")
+	tz := fs.String("tz", "", "timezone, e.g. Asia/Shanghai")
+	model := fs.String("model", "", "optional codex model override")
+	reasoning := fs.String("reasoning-effort", "", "optional codex reasoning effort override")
+	disable := fs.Bool("disable", false, "create/update as disabled")
+	updatedBy := fs.String("updated-by", "", "free-form updater label")
+	var addDirs multiFlag
+	fs.Var(&addDirs, "add-dir", "additional directory (repeatable)")
+	_ = fs.Parse(args)
+
+	repo := resolveRepoRoot(*repoFlag)
+	store := timer.NewStore(repo)
+	taskPrompt := strings.TrimSpace(*prompt)
+	if strings.TrimSpace(*promptFile) != "" {
+		b, err := os.ReadFile(*promptFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		taskPrompt = strings.TrimSpace(string(b))
+	}
+	if strings.TrimSpace(*id) == "" {
+		fmt.Fprintln(os.Stderr, "error: --id is required")
+		os.Exit(2)
+	}
+	schedule, err := buildTimerSchedule(*every, *daily, *weekly, *at, *tz)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(2)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	task := timer.Task{
+		ID:              strings.TrimSpace(*id),
+		Enabled:         !*disable,
+		Account:         strings.TrimSpace(*account),
+		ChatID:          strings.TrimSpace(*chatID),
+		Prompt:          taskPrompt,
+		Cwd:             strings.TrimSpace(*cwd),
+		AddDirs:         normalizeStringSlice(addDirs),
+		Model:           strings.TrimSpace(*model),
+		ReasoningEffort: strings.TrimSpace(*reasoning),
+		Schedule:        schedule,
+		UpdatedAt:       now,
+		LastUpdatedBy:   strings.TrimSpace(*updatedBy),
+	}
+	if existing, err := store.ReadTask(task.ID); err == nil {
+		task.CreatedAt = existing.CreatedAt
+		if task.ChatID == "" {
+			task.ChatID = existing.ChatID
+		}
+	} else {
+		task.CreatedAt = now
+	}
+	if task.CreatedAt == "" {
+		task.CreatedAt = now
+	}
+	if err := store.WriteTask(task); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("upserted=%s schedule=%s chat_id=%s enabled=%t\n", task.ID, timerScheduleSummary(task.Schedule), task.ChatID, task.Enabled)
+}
+
+func buildTimerSchedule(every, daily, weekly, at, tz string) (timer.Schedule, error) {
+	count := 0
+	for _, raw := range []string{every, daily, weekly} {
+		if strings.TrimSpace(raw) != "" {
+			count++
+		}
+	}
+	if count != 1 {
+		return timer.Schedule{}, fmt.Errorf("choose exactly one schedule mode: --every | --daily | --weekly")
+	}
+	if strings.TrimSpace(every) != "" {
+		return timer.Schedule{Kind: "interval", Every: strings.TrimSpace(every), Timezone: strings.TrimSpace(tz)}, nil
+	}
+	if strings.TrimSpace(daily) != "" {
+		return timer.Schedule{Kind: "daily", At: strings.TrimSpace(daily), Timezone: strings.TrimSpace(tz)}, nil
+	}
+	parts := []string{}
+	for _, item := range strings.Split(weekly, ",") {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	return timer.Schedule{Kind: "weekly", Weekdays: parts, At: strings.TrimSpace(at), Timezone: strings.TrimSpace(tz)}, nil
+}
+
+func timerScheduleSummary(schedule timer.Schedule) string {
+	switch schedule.Kind {
+	case "interval":
+		return "every " + strings.TrimSpace(schedule.Every)
+	case "daily":
+		if strings.TrimSpace(schedule.Timezone) != "" {
+			return fmt.Sprintf("daily %s %s", strings.TrimSpace(schedule.At), strings.TrimSpace(schedule.Timezone))
+		}
+		return "daily " + strings.TrimSpace(schedule.At)
+	case "weekly":
+		base := fmt.Sprintf("weekly %s @ %s", strings.Join(schedule.Weekdays, ","), strings.TrimSpace(schedule.At))
+		if strings.TrimSpace(schedule.Timezone) != "" {
+			return base + " " + strings.TrimSpace(schedule.Timezone)
+		}
+		return base
+	default:
+		return schedule.Kind
+	}
+}
+
+func normalizeStringSlice(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func emptyFallback(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func launchagents(args []string) {

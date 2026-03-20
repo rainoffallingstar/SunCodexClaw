@@ -33,6 +33,14 @@ const DEFAULT_CODEX_SYSTEM_PROMPT = [
   '不要承诺“稍后回复”或“几分钟后回复”；必须在当前这一条里给出可执行结果，或明确失败原因。',
   '默认使用简体中文，除非用户明确要求其他语言。',
 ].join('\n');
+const DEFAULT_TIMER_SYSTEM_GUIDE = [
+  '定时任务系统：如果用户提到 /timer、定时、计划任务、周期执行，优先使用 `suncodexclawd timer ...` 管理内置 timer 系统。',
+  '先用 `suncodexclawd timer list` 或 `suncodexclawd timer show <id>` 查看现状。',
+  '创建或更新任务优先使用 `suncodexclawd timer upsert`。',
+  '常用方式：`--every 1h`、`--daily 09:00`、`--weekly mon,tue,fri --at 09:00`。',
+  '如果用户没有指定发送目标，默认把 `--chat-id` 设为当前聊天的 chat_id。',
+  '如果用户没有指定账号，默认把 `--account` 设为当前机器人账号。',
+].join('\n');
 const MAX_IMAGE_INPUTS = 6;
 const FEISHU_TEXT_CHUNK_LIMIT = 4000;
 const FEISHU_MARKDOWN_CARD_CHUNK_LIMIT = 4000;
@@ -89,6 +97,16 @@ function readJsonIfExists(filePath) {
   } catch (err) {
     throw new Error(`invalid json in ${filePath}: ${err.message}`);
   }
+}
+
+function readJsonRequired(filePath) {
+  const resolved = path.resolve(String(filePath || ''));
+  ensure(resolved, 'json file path is required');
+  ensure(fs.existsSync(resolved), `json file not found: ${resolved}`);
+  return {
+    path: resolved,
+    value: readJsonIfExists(resolved) || {},
+  };
 }
 
 function asBool(value, fallback) {
@@ -1992,6 +2010,121 @@ function parseThreadCommand(text) {
   return { type: 'help' };
 }
 
+function parseTimerCommand(text) {
+  const raw = normalizeCommandText(text);
+  if (!raw) return null;
+
+  if (/^\/timers$/i.test(raw)) return { type: 'list' };
+  if (!/^\/timer(?:\s|$)/i.test(raw)) return null;
+
+  if (/^\/timer(?:\s+help)?$/i.test(raw)) return { type: 'help' };
+  if (/^\/timer\s+list$/i.test(raw)) return { type: 'list' };
+
+  const patterns = [
+    { type: 'show', re: /^\/timer\s+show\s+(.+)$/i },
+    { type: 'run', re: /^\/timer\s+run\s+(.+)$/i },
+    { type: 'logs', re: /^\/timer\s+logs\s+(.+)$/i },
+    { type: 'enable', re: /^\/timer\s+enable\s+(.+)$/i },
+    { type: 'disable', re: /^\/timer\s+disable\s+(.+)$/i },
+    { type: 'delete', re: /^\/timer\s+delete\s+(.+)$/i },
+  ];
+  for (const item of patterns) {
+    const match = raw.match(item.re);
+    if (!match) continue;
+    return {
+      type: item.type,
+      target: String(match[1] || '').trim(),
+    };
+  }
+
+  // Unknown /timer forms fall through to Codex so it can translate
+  // natural-language timer requests into suncodexclawd timer commands.
+  return null;
+}
+
+function formatTimerHelp() {
+  return [
+    '定时任务命令：',
+    '/timers',
+    '/timer help',
+    '/timer list',
+    '/timer show <任务ID>',
+    '/timer run <任务ID>',
+    '/timer logs <任务ID>',
+    '/timer enable <任务ID>',
+    '/timer disable <任务ID>',
+    '/timer delete <任务ID>',
+    '',
+    '复杂创建或修改也可以直接发自然语言，例如：',
+    '/timer 创建一个每天 09:00 执行的日报任务，目录 /workspace，结果发回当前会话',
+  ].join('\n');
+}
+
+function resolveDaemonBin() {
+  const explicit = String(process.env.SUNCODEXCLAWD_BIN || '').trim();
+  if (explicit) return explicit;
+  const candidates = [
+    '/app/bin/suncodexclawd',
+    path.resolve(__dirname, '..', 'bin', 'suncodexclawd'),
+    'suncodexclawd',
+  ];
+  for (const candidate of candidates) {
+    if (!candidate.includes(path.sep)) return candidate;
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return 'suncodexclawd';
+}
+
+function runTimerAdminCommand(args = [], { timeoutMs = 30000 } = {}) {
+  const repoRoot = path.resolve(__dirname, '..');
+  const cmdArgs = ['timer', ...args, '--repo', repoRoot];
+  const result = spawnSync(resolveDaemonBin(), cmdArgs, {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    env: process.env,
+  });
+  if (result.error) {
+    throw new Error(`timer command failed: ${result.error.message}`);
+  }
+  const combined = [String(result.stdout || ''), String(result.stderr || '')]
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+  if (result.status !== 0) {
+    throw new Error(compactText(combined || `exit=${result.status}`, 1200));
+  }
+  return compactText(combined || 'ok', 4000);
+}
+
+function handleTimerCommand(command) {
+  if (!command) return { handled: false, reply: '' };
+  if (command.type === 'help') {
+    return { handled: true, reply: formatTimerHelp() };
+  }
+  if (command.type === 'list') {
+    return { handled: true, reply: runTimerAdminCommand(['list']) };
+  }
+  const target = String(command.target || '').trim();
+  if (!target) {
+    return { handled: true, reply: '缺少任务 ID。请用 /timer help 查看命令格式。' };
+  }
+  const argsByType = {
+    show: ['show', target],
+    run: ['run', target],
+    logs: ['logs', target],
+    enable: ['enable', target],
+    disable: ['disable', target],
+    delete: ['delete', target],
+  };
+  const args = argsByType[command.type];
+  if (!args) return { handled: false, reply: '' };
+  return {
+    handled: true,
+    reply: runTimerAdminCommand(args),
+  };
+}
+
 function makeThread(threadId, name = '') {
   const threadName = String(name || '').trim() || `线程 ${threadId}`;
   return {
@@ -2257,6 +2390,8 @@ function buildCodexPrompt({
   history,
   userText,
   imageCount = 0,
+  accountName = '',
+  chatID = '',
   cwd = '',
   addDirs = [],
   threadTitle = '',
@@ -2269,6 +2404,10 @@ function buildCodexPrompt({
   }
   lines.push(systemPrompt || DEFAULT_CODEX_SYSTEM_PROMPT);
   lines.push('');
+  lines.push(DEFAULT_TIMER_SYSTEM_GUIDE);
+  lines.push('');
+  lines.push(`当前机器人账号：${accountName || '(unknown)'}`);
+  lines.push(`当前聊天 chat_id：${chatID || '(unknown)'}`);
   lines.push(`当前工作目录：${cwd || process.cwd()}`);
   if (Array.isArray(addDirs) && addDirs.length > 0) {
     lines.push('额外可访问工作目录：');
@@ -2305,9 +2444,14 @@ function buildCodexPrompt({
   return lines.join('\n');
 }
 
-function buildCodexResumePrompt({ userText, imageCount = 0 }) {
+function buildCodexResumePrompt({ userText, imageCount = 0, accountName = '', chatID = '' }) {
   const lines = [];
   lines.push('继续当前线程。下面是用户最新消息，请直接回复用户。');
+  lines.push('');
+  lines.push(DEFAULT_TIMER_SYSTEM_GUIDE);
+  lines.push('');
+  lines.push(`当前机器人账号：${accountName || '(unknown)'}`);
+  lines.push(`当前聊天 chat_id：${chatID || '(unknown)'}`);
   lines.push('');
   lines.push('用户最新消息：');
   lines.push(compactText(userText, 2000));
@@ -2492,6 +2636,8 @@ async function generateCodexReply({
   imagePaths = [],
   sessionId = '',
   threadTitle = '',
+  accountName = '',
+  chatID = '',
   onSpawn = null,
   onProgressEvent = null,
 }) {
@@ -2534,7 +2680,7 @@ async function generateCodexReply({
   if (resolvedSessionId) {
     try {
       const resumed = await runExec({
-        prompt: buildCodexResumePrompt({ userText, imageCount }),
+        prompt: buildCodexResumePrompt({ userText, imageCount, accountName, chatID }),
         resumeSessionId: resolvedSessionId,
       });
       return {
@@ -2552,6 +2698,8 @@ async function generateCodexReply({
       history,
       userText,
       imageCount,
+      accountName,
+      chatID,
       cwd: codex.cwd,
       addDirs: codex.addDirs,
       threadTitle,
@@ -2849,6 +2997,92 @@ async function sendCodexReplyPassthrough(client, chatID, rawText, shouldContinue
     logTag: 'reply',
     preferMarkdown: true,
   });
+}
+
+function normalizeTimerTask(rawTask, taskPath) {
+  const task = rawTask && typeof rawTask === 'object' ? rawTask : {};
+  const id = String(task.id || path.basename(taskPath, path.extname(taskPath)) || 'timer-task').trim();
+  const prompt = String(task.prompt || '').trim();
+  const chatID = String(task.chat_id || '').trim();
+  ensure(prompt, `timer task prompt is empty: ${taskPath}`);
+  ensure(chatID, `timer task chat_id is empty: ${taskPath}`);
+  return {
+    id,
+    chatID,
+    prompt,
+    cwd: String(task.cwd || '').trim(),
+    addDirs: resolveOptionalDirList(task.add_dirs || []),
+    model: String(task.model || '').trim(),
+    reasoningEffort: String(task.reasoning_effort || '').trim(),
+  };
+}
+
+async function runTimerTaskMode({
+  client,
+  accountName,
+  taskFile,
+  codex,
+}) {
+  const loaded = readJsonRequired(taskFile);
+  const task = normalizeTimerTask(loaded.value, loaded.path);
+  const timerCodex = {
+    ...codex,
+    cwd: resolveOptionalDir(task.cwd) || codex.cwd,
+    addDirs: (task.addDirs.length > 0 ? task.addDirs : codex.addDirs || []).filter((dir) => dir !== (resolveOptionalDir(task.cwd) || codex.cwd)),
+    model: task.model || codex.model,
+    reasoningEffort: task.reasoningEffort || codex.reasoningEffort,
+  };
+  const threadTitle = `定时任务 | ${task.id}`;
+
+  console.log('TIMER_TASK_START');
+  console.log(`timer_task_id=${task.id}`);
+  console.log(`timer_task_file=${loaded.path}`);
+  console.log(`timer_task_chat_id=${task.chatID}`);
+  console.log(`timer_task_cwd=${timerCodex.cwd || process.cwd()}`);
+
+  try {
+    const codexReply = await generateCodexReply({
+      codex: timerCodex,
+      history: [],
+      userText: task.prompt,
+      imagePaths: [],
+      sessionId: '',
+      threadTitle,
+      accountName,
+      chatID: task.chatID,
+    });
+    const codexRawReply = String(codexReply.reply || '').replace(/\r/g, '');
+    const attachmentPlan = extractFeishuAttachmentDirectives(codexRawReply);
+    let userReplyText = attachmentPlan.text;
+    if (!userReplyText.trim() && attachmentPlan.attachments.length === 0) {
+      throw new Error('codex returned empty reply');
+    }
+
+    if (userReplyText) {
+      await sendCodexReplyPassthrough(client, task.chatID, userReplyText);
+    }
+    const attachmentSendResult = await sendRequestedAttachments(
+      client,
+      task.chatID,
+      attachmentPlan.attachments,
+      timerCodex.cwd || process.cwd()
+    );
+    if (!userReplyText && attachmentSendResult.sent.length > 0) {
+      userReplyText = buildDefaultAttachmentReply(attachmentSendResult.sent);
+      if (userReplyText) {
+        await sendCodexReplyPassthrough(client, task.chatID, userReplyText);
+      }
+    }
+    const attachmentFailureReply = buildAttachmentSendFailureReply(attachmentSendResult.sent, attachmentSendResult.failed);
+    if (attachmentFailureReply) {
+      await sendTextReplySafe(client, task.chatID, attachmentFailureReply, 'timer_attachment_notice');
+    }
+    console.log(`TIMER_TASK_OK id=${task.id}`);
+  } catch (err) {
+    console.error(`TIMER_TASK_ERROR id=${task.id} message=${err.message}`);
+    await sendTextReplySafe(client, task.chatID, `定时任务 ${task.id} 执行失败：${err.message}`, 'timer_task_reply');
+    throw err;
+  }
 }
 
 function sleep(ms) {
@@ -3854,6 +4088,7 @@ async function main() {
 
   const dryRunValue = getArg('--dry-run', '');
   const dryRun = process.argv.includes('--dry-run') || asBool(dryRunValue, false);
+  const timerTaskFile = String(getArg('--timer-task-file', '')).trim();
 
   const domainInput = (getArg('--domain', '') || process.env.FEISHU_DOMAIN || config.domain || 'feishu').trim();
   const domain = resolveDomain(domainInput);
@@ -3947,7 +4182,7 @@ async function main() {
 
   ensure(creds.appId.value, `feishu app_id not found for account "${accountName}"`);
   ensure(creds.appSecret.value, `feishu app_secret not found for account "${accountName}"`);
-  if (replyMode === 'codex') {
+  if (replyMode === 'codex' || timerTaskFile) {
     ensure(codexDetect.found, `codex binary not found: ${codex.bin}`);
   }
 
@@ -3957,6 +4192,16 @@ async function main() {
     domain: domain.value,
   };
   const client = new lark.Client(baseConfig);
+
+  if (timerTaskFile) {
+    await runTimerTaskMode({
+      client,
+      accountName,
+      taskFile: timerTaskFile,
+      codex,
+    });
+    return;
+  }
 
   const chatStates = new Map();
   const chatRunners = new Map();
@@ -4197,6 +4442,22 @@ async function main() {
 
     const chatState = ensureChatState(chatStates, conversationScope.stateKey || chatID);
     if (messageType === 'text') {
+      const timerCommand = parseTimerCommand(userText);
+      if (timerCommand) {
+        try {
+          const result = handleTimerCommand(timerCommand);
+          if (result.handled) {
+            await sendTextReplySafe(client, chatID, result.reply, 'timer_reply');
+            console.log(`reply=ok mode=timer_command type=${timerCommand.type}`);
+            return;
+          }
+        } catch (err) {
+          await sendTextReplySafe(client, chatID, `定时任务命令执行失败：${err.message}`, 'timer_reply');
+          console.error(`reply=error mode=timer_command type=${timerCommand.type} message=${err.message}`);
+          return;
+        }
+      }
+
       const threadCommand = parseThreadCommand(userText);
       if (threadCommand) {
         const result = handleThreadCommand(chatState, threadCommand);
@@ -4281,6 +4542,8 @@ async function main() {
           imagePaths,
           sessionId: currentThread.codexThreadId,
           threadTitle: codexThreadTitle,
+          accountName,
+          chatID,
           onSpawn: (child) => {
             taskControl.attachCodexChild(child);
           },

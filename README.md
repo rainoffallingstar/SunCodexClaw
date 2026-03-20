@@ -228,7 +228,115 @@ docker compose exec suncodexclaw suncodexclawd status all
 docker compose exec suncodexclaw suncodexclawd logs assistant -f
 docker compose exec suncodexclaw suncodexclawd restart assistant
 docker compose exec suncodexclaw suncodexclawd stop all
+docker compose exec suncodexclaw suncodexclawd update --check
 ```
+
+自更新命令：
+
+```bash
+suncodexclawd update --check
+suncodexclawd update
+```
+
+说明：
+
+- `update --check` 只查看将要下载的 release 资产，不替换本地二进制
+- `update` 会按当前机器的 `GOOS/GOARCH` 从 GitHub Release 下载对应包，并替换当前 `suncodexclawd` 二进制
+- 替换完成后，正在运行的旧进程不会自动热切换；需要重启后才会运行新版本
+
+## 更新
+
+### 更新容器内 `suncodexclawd` 二进制
+
+如果你当前是源码目录 + Compose 挂载配置运行，并且想只更新守护二进制，可以在容器里执行：
+
+```bash
+docker compose exec suncodexclaw suncodexclawd update --check
+docker compose exec suncodexclaw suncodexclawd update
+docker compose restart suncodexclaw
+```
+
+说明：
+
+- `update` 会替换容器内当前 `suncodexclawd` 二进制
+- 替换完成后必须重启容器，新的守护进程才会生效
+
+### 更新 Docker Compose 镜像
+
+如果你希望升级整个镜像，而不是只替换容器内二进制，推荐这样做：
+
+```bash
+docker compose pull
+docker compose up -d --force-recreate
+docker compose logs -f
+```
+
+如果你固定了标签，也可以先修改 `.env` 里的 `IMAGE_TAG`，再执行：
+
+```bash
+docker compose pull
+docker compose up -d --force-recreate
+```
+
+## 定时任务
+
+当前版本内置了 `suncodexclawd timer` 子系统。
+
+- 容器执行 `start` 时，会默认顺带启动 timer scheduler
+- 定时任务配置保存在 `config/timers/*.json`
+- 运行状态保存在 `.runtime/timers/state/*.json`
+- 定时任务日志保存在 `.runtime/timers/logs/*.log`
+
+常用命令：
+
+```bash
+docker compose exec suncodexclaw suncodexclawd timer list
+docker compose exec suncodexclaw suncodexclawd timer show daily-report
+docker compose exec suncodexclaw suncodexclawd timer run daily-report
+docker compose exec suncodexclaw suncodexclawd timer logs daily-report
+docker compose exec suncodexclaw suncodexclawd timer disable daily-report
+docker compose exec suncodexclaw suncodexclawd timer enable daily-report
+docker compose exec suncodexclaw suncodexclawd timer delete daily-report
+```
+
+创建或更新一个任务：
+
+```bash
+docker compose exec suncodexclaw suncodexclawd timer upsert \
+  --id daily-report \
+  --account assistant \
+  --chat-id oc_xxx \
+  --daily 09:00 \
+  --tz Asia/Shanghai \
+  --cwd /workspace \
+  --prompt "检查 /workspace 仓库并输出日报"
+```
+
+支持的调度方式：
+
+- `--every 1h`
+- `--daily 09:00`
+- `--weekly mon,tue,fri --at 09:00`
+
+## 飞书里的 `/timer`
+
+机器人默认会被告知如何使用 `suncodexclawd timer`。
+
+你可以直接在飞书里发送 `/timer ...` 让机器人帮你管理定时任务，例如：
+
+- `/timer list`
+- `/timer show daily-report`
+- `/timer run daily-report`
+- `/timer logs daily-report`
+- `/timer enable daily-report`
+- `/timer disable daily-report`
+- `/timer delete daily-report`
+- `/timer 创建一个每天 09:00 执行的日报任务，目录 /workspace，结果发回当前会话`
+- `/timer 删除 daily-report`
+
+其中 `list/show/run/logs/enable/disable/delete` 这类格式化命令会直接调用本地 `suncodexclawd timer ...`。
+
+更复杂的自然语言 `/timer ...` 请求会交给机器人翻译成对应的 `suncodexclawd timer ...` 命令来执行。
 
 ## 配置文件说明
 

@@ -11,7 +11,7 @@ case "${cmd}" in
   start)
     exec /app/bin/suncodexclawd start
     ;;
-  status|stop|restart|list|logs|preflight|configure|launchagents)
+  status|stop|restart|list|logs|preflight|configure|launchagents|timer|update)
     exec /app/bin/suncodexclawd "${cmd}" "$@"
     ;;
   shell|bash|sh)
