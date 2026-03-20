@@ -144,6 +144,7 @@ cp app.env.example app.env
 - `.env` 给 `docker compose` 自己做变量替换
 - `app.env` 注入容器内，供配置向导和机器人进程读取
 - `workspace` 会挂载到容器内的 `/workspace`
+- 机器人首次在该运行目录执行 Codex 时，会自动初始化本地 Git 仓库
 - 机器人首次在该运行目录执行 Codex 时，会自动补齐 `agent.md`、`soul.md`、`heartbeats.md`
 
 ### 3. 填写环境变量

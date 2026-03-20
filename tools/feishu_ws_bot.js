@@ -157,6 +157,7 @@ const DEFAULT_RUNTIME_DOCS = Object.freeze({
     '',
     '- 名称：SunCodexClaw assistant',
     '- 运行时：当前工作目录由 SunCodexClaw 管理',
+    '- 仓库：当前运行目录是一个 Git 仓库，应优先按 Git 工作区的方式理解和操作它',
     '- 使命：在这个目录内理解用户需求、直接动手解决问题，并维护长期有效的工作记忆',
     '',
     '## 已暴露技能',
@@ -241,10 +242,26 @@ const DEFAULT_RUNTIME_DOCS = Object.freeze({
   ].join('\n'),
 });
 
-function ensureRuntimeDocs(cwd) {
+function ensureRuntimeWorkspace(cwd) {
   const dir = resolveOptionalDir(cwd);
-  if (!dir) return [];
+  if (!dir) return { createdDocs: [], gitInitialized: false };
   fs.mkdirSync(dir, { recursive: true });
+  let gitInitialized = false;
+  const gitDir = path.join(dir, '.git');
+  if (!fs.existsSync(gitDir)) {
+    const gitInit = spawnSync('git', ['init'], {
+      cwd: dir,
+      encoding: 'utf8',
+    });
+    if (gitInit.error) {
+      console.error(`runtime_git_init=error cwd=${dir} message=${gitInit.error.message}`);
+    } else if (gitInit.status !== 0) {
+      const details = compactText(String(gitInit.stderr || gitInit.stdout || `exit=${gitInit.status}`), 400);
+      console.error(`runtime_git_init=error cwd=${dir} message=${details}`);
+    } else {
+      gitInitialized = true;
+    }
+  }
   const created = [];
   for (const [name, content] of Object.entries(DEFAULT_RUNTIME_DOCS)) {
     const target = path.join(dir, name);
@@ -252,7 +269,7 @@ function ensureRuntimeDocs(cwd) {
     fs.writeFileSync(target, content, 'utf8');
     created.push(target);
   }
-  return created;
+  return { createdDocs: created, gitInitialized };
 }
 
 function pickValue(candidates) {
@@ -2896,9 +2913,12 @@ async function generateCodexReply({
 }) {
   let resolvedSessionId = String(sessionId || '').trim();
   const imageCount = Array.isArray(imagePaths) ? imagePaths.length : 0;
-  const createdRuntimeDocs = ensureRuntimeDocs(codex.cwd);
-  if (createdRuntimeDocs.length > 0) {
-    console.log(`runtime_docs_initialized=${createdRuntimeDocs.join(' | ')}`);
+  const runtimeWorkspace = ensureRuntimeWorkspace(codex.cwd);
+  if (runtimeWorkspace.gitInitialized) {
+    console.log(`runtime_git_initialized=${codex.cwd}`);
+  }
+  if (runtimeWorkspace.createdDocs.length > 0) {
+    console.log(`runtime_docs_initialized=${runtimeWorkspace.createdDocs.join(' | ')}`);
   }
   const runExec = async ({ prompt, resumeSessionId = '' }) => {
     return runCodexExec({
