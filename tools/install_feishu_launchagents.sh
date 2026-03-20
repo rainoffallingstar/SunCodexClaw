@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Deprecated wrapper: forwards to `suncodexclawd launchagents ...`.
 # Prefer running:
-#   ./bin/suncodexclawd launchagents <install|uninstall|status> [account|all]
+#   ./bin/suncodexclawd launchagents <install|uninstall|status> [--account <account>]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -17,7 +17,7 @@ Usage:
 
 Notes:
   - deprecated wrapper; forwards to:
-    ./bin/suncodexclawd launchagents <install|uninstall|status> [account|all]
+    ./bin/suncodexclawd launchagents <install|uninstall|status> [--account <account>]
 USAGE
 }
 
@@ -49,7 +49,10 @@ main() {
   else
     shift 1
   fi
-  exec "${GO_DAEMON_BIN}" launchagents "${action}" "${target}" "$@"
+  if [[ -n "${target}" && "${target}" != "all" ]]; then
+    exec "${GO_DAEMON_BIN}" launchagents "${action}" --account "${target}" "$@"
+  fi
+  exec "${GO_DAEMON_BIN}" launchagents "${action}" "$@"
 }
 
 main "$@"

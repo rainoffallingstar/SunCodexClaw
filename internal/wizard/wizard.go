@@ -18,7 +18,7 @@ type inspectResult struct {
 	Paths   struct {
 		AccountJSON string `json:"accountJson"`
 	} `json:"paths"`
-	Missing []missingItem `json:"missing"`
+	Items []missingItem `json:"items"`
 }
 
 type missingItem struct {
@@ -31,8 +31,9 @@ type missingItem struct {
 }
 
 type applyRequest struct {
-	Secrets map[string]any `json:"secrets"`
-	Overlay map[string]any `json:"overlay"`
+	Secrets       map[string]any `json:"secrets"`
+	Overlay       map[string]any `json:"overlay"`
+	SharedOverlay map[string]any `json:"sharedOverlay"`
 }
 
 type Options struct {
@@ -41,17 +42,24 @@ type Options struct {
 
 func Usage(w io.Writer, bin string) {
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintf(w, "  %s configure [--account assistant] [--yes] [--from-env]\n", bin)
+	fmt.Fprintf(w, "  %s configure --account assistant [--yes]\n", bin)
+	fmt.Fprintf(w, "  %s configure add --account reviewer [--yes]\n", bin)
 }
 
 func Configure(opts Options) error {
+	args := append([]string{}, opts.Args...)
+	if len(args) > 0 && args[0] == "add" {
+		args = args[1:]
+	}
 	fs := flag.NewFlagSet("configure", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	account := fs.String("account", "assistant", "feishu account name (config/feishu/<account>.json)")
-	yes := fs.Bool("yes", false, "use recommended defaults for missing fields")
-	fromEnv := fs.Bool("from-env", false, "fill missing fields from environment variables when available")
-	if err := fs.Parse(opts.Args); err != nil {
+	account := fs.String("account", "", "feishu account name (config/feishu/bots.toml [bot.<account>])")
+	yes := fs.Bool("yes", false, "accept current or recommended defaults without prompting")
+	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if strings.TrimSpace(*account) == "" {
+		return fmt.Errorf("configure requires --account <account>")
 	}
 
 	root, err := findRepoRoot()
@@ -60,49 +68,44 @@ func Configure(opts Options) error {
 	}
 
 	store := configstore.NewStore(root)
-	inspect, effective, err := inspectMissing(store, *account)
+	inspect, effective, err := inspectConfig(store, *account)
 	if err != nil {
 		return err
 	}
-
-	if len(inspect.Missing) == 0 {
-		fmt.Println("No missing required fields detected.")
-		fmt.Printf("account=%s\n", inspect.Account)
-		return nil
+	shared, err := store.ReadOverlay("default")
+	if err != nil {
+		return err
 	}
 
 	reader := bufio.NewReader(os.Stdin)
 	secretsPatch := map[string]any{}
 	overlayPatch := map[string]any{}
+	sharedOverlayPatch := map[string]any{}
 
 	fmt.Println("SunCodexClaw config wizard")
 	fmt.Printf("account=%s\n", inspect.Account)
-	fmt.Println("Fill missing fields (press Enter to accept default when provided).")
+	fmt.Println("Press Enter to keep the current value or accept the suggested default.")
 	fmt.Println("")
 
-	for _, group := range groupMissing(inspect.Missing) {
+	sharedRootItem := missingItem{
+		Key:         "codex.cwd_root",
+		Prompt:      "Shared Codex workspace root path",
+		Recommended: firstNonEmpty(renderPromptDefault(shared, "codex.cwd_root"), "workspace"),
+		Optional:    true,
+		Target:      "overlay",
+	}
+	if val, ok, err := askForItem(reader, sharedRootItem, *yes); err != nil {
+		return err
+	} else if ok {
+		setDotted(sharedOverlayPatch, "codex.cwd_root", val)
+	}
+
+	for _, group := range groupMissing(inspect.Items) {
 		fmt.Printf("== %s ==\n", group.name)
 		for _, item := range group.items {
-			if hasDotted(effective, item.Key) {
-				continue
-			}
-			if *fromEnv {
-				if raw, ok := envValueForKey(*account, item.Key); ok {
-					val, ok2, err := coerce(item, raw)
-					if err != nil {
-						return err
-					}
-					if ok2 {
-						patch := overlayPatch
-						if item.Target == "secrets" {
-							patch = secretsPatch
-						}
-						setDotted(patch, item.Key, val)
-					}
-					continue
-				}
-			}
-			val, ok, askErr := askForItem(reader, item, *yes)
+			promptItem := item
+			promptItem.Recommended = firstNonEmpty(renderPromptDefault(effective, item.Key), item.Recommended)
+			val, ok, askErr := askForItem(reader, promptItem, *yes)
 			if askErr != nil {
 				return askErr
 			}
@@ -119,14 +122,15 @@ func Configure(opts Options) error {
 		fmt.Println("")
 	}
 
-	req := applyRequest{Secrets: secretsPatch, Overlay: overlayPatch}
+	req := applyRequest{Secrets: secretsPatch, Overlay: overlayPatch, SharedOverlay: sharedOverlayPatch}
 	if err := applyPatches(store, *account, req); err != nil {
 		return err
 	}
 
 	fmt.Println("")
 	fmt.Println("Done.")
-	fmt.Printf("updated=config/secrets/local.yaml\n")
+	fmt.Printf("updated=config/secrets/local.toml\n")
+	fmt.Printf("updated=config/feishu/bots.toml [shared]\n")
 	fmt.Printf("updated=%s\n", inspect.Paths.AccountJSON)
 	return nil
 }
@@ -148,127 +152,64 @@ func prompt(r *bufio.Reader, question, def string) (string, error) {
 	return v, nil
 }
 
-func normEnvAccount(account string) string {
-	raw := strings.TrimSpace(account)
-	if raw == "" {
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func renderPromptDefault(effective map[string]any, dotted string) string {
+	value, ok := getDottedValue(effective, dotted)
+	if !ok || value == nil {
 		return ""
 	}
-	var b strings.Builder
-	for _, r := range raw {
-		switch {
-		case r >= 'a' && r <= 'z':
-			b.WriteRune(r - ('a' - 'A'))
-		case r >= 'A' && r <= 'Z':
-			b.WriteRune(r)
-		case r >= '0' && r <= '9':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('_')
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case bool:
+		if v {
+			return "true"
 		}
+		return "false"
+	case int:
+		return fmt.Sprintf("%d", v)
+	case int64:
+		return fmt.Sprintf("%d", v)
+	case float64:
+		return fmt.Sprintf("%.0f", v)
+	case []string:
+		return strings.Join(v, ",")
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			out = append(out, strings.TrimSpace(fmt.Sprintf("%v", item)))
+		}
+		return strings.Join(out, ",")
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
 	}
-	return b.String()
 }
 
-func firstEnv(keys ...string) (string, bool) {
-	for _, k := range keys {
-		v := strings.TrimSpace(os.Getenv(k))
-		if v != "" {
-			return v, true
+func getDottedValue(root map[string]any, dotted string) (any, bool) {
+	if root == nil {
+		return nil, false
+	}
+	parts := strings.Split(dotted, ".")
+	var cur any = root
+	for _, part := range parts {
+		next, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur, ok = next[part]
+		if !ok {
+			return nil, false
 		}
 	}
-	return "", false
-}
-
-func envValueForKey(account, key string) (string, bool) {
-	acc := normEnvAccount(account)
-	accPrefix := ""
-	if acc != "" {
-		accPrefix = "FEISHU_" + acc + "_"
-	}
-
-	// Keep the mapping aligned with tools/feishu_ws_bot.js env names where possible.
-	switch key {
-	// Feishu required credentials (secrets)
-	case "app_id":
-		return firstEnv(accPrefix+"APP_ID", "FEISHU_APP_ID")
-	case "app_secret":
-		return firstEnv(accPrefix+"APP_SECRET", "FEISHU_APP_SECRET")
-	case "encrypt_key":
-		return firstEnv(accPrefix+"ENCRYPT_KEY", "FEISHU_ENCRYPT_KEY")
-	case "verification_token":
-		return firstEnv(accPrefix+"VERIFICATION_TOKEN", "FEISHU_VERIFICATION_TOKEN")
-
-	// Optional bot open id
-	case "bot_open_id":
-		return firstEnv(accPrefix+"BOT_OPEN_ID", "FEISHU_BOT_OPEN_ID")
-
-	// Common bot settings (overlay)
-	case "bot_name":
-		return firstEnv(accPrefix+"BOT_NAME", "FEISHU_BOT_NAME")
-	case "domain":
-		return firstEnv(accPrefix+"DOMAIN", "FEISHU_DOMAIN")
-	case "reply_mode":
-		return firstEnv(accPrefix+"REPLY_MODE", "FEISHU_REPLY_MODE")
-	case "reply_prefix":
-		return firstEnv(accPrefix+"REPLY_PREFIX", "FEISHU_REPLY_PREFIX")
-	case "require_mention":
-		return firstEnv(accPrefix+"REQUIRE_MENTION", "FEISHU_REQUIRE_MENTION")
-	case "require_mention_group_only":
-		return firstEnv(accPrefix+"REQUIRE_MENTION_GROUP_ONLY", "FEISHU_REQUIRE_MENTION_GROUP_ONLY")
-	case "mention_aliases":
-		return firstEnv(accPrefix+"MENTION_ALIASES", "FEISHU_MENTION_ALIASES")
-
-	// Progress (overlay)
-	case "progress.enabled":
-		return firstEnv(accPrefix+"PROGRESS_ENABLED", "FEISHU_PROGRESS_ENABLED")
-	case "progress.message":
-		return firstEnv(accPrefix+"PROGRESS_MESSAGE", "FEISHU_PROGRESS_MESSAGE")
-	case "progress.mode":
-		return firstEnv(accPrefix+"PROGRESS_MODE", "FEISHU_PROGRESS_MODE")
-	case "progress.doc.title_prefix":
-		return firstEnv(accPrefix+"PROGRESS_DOC_TITLE_PREFIX", "FEISHU_PROGRESS_DOC_TITLE_PREFIX")
-
-	// Codex settings (overlay + secrets)
-	case "codex.cwd":
-		// The bot runtime uses FEISHU_CODEX_CD; accept a more explicit name too.
-		return firstEnv(accPrefix+"CODEX_CWD", accPrefix+"CODEX_CD", "FEISHU_CODEX_CWD", "FEISHU_CODEX_CD")
-	case "codex.add_dirs":
-		return firstEnv(accPrefix+"CODEX_ADD_DIRS", "FEISHU_CODEX_ADD_DIRS")
-	case "codex.bin":
-		return firstEnv(accPrefix+"CODEX_BIN", "FEISHU_CODEX_BIN", "CODEX_BIN")
-	case "codex.model":
-		return firstEnv(accPrefix+"CODEX_MODEL", "FEISHU_CODEX_MODEL")
-	case "codex.reasoning_effort":
-		return firstEnv(accPrefix+"CODEX_REASONING_EFFORT", "FEISHU_CODEX_REASONING_EFFORT")
-	case "codex.profile":
-		return firstEnv(accPrefix+"CODEX_PROFILE", "FEISHU_CODEX_PROFILE")
-	case "codex.history_turns":
-		return firstEnv(accPrefix+"HISTORY_TURNS", "FEISHU_HISTORY_TURNS")
-	case "codex.sandbox":
-		return firstEnv(accPrefix+"CODEX_SANDBOX", "FEISHU_CODEX_SANDBOX")
-	case "codex.approval_policy":
-		return firstEnv(accPrefix+"CODEX_APPROVAL_POLICY", "FEISHU_CODEX_APPROVAL_POLICY")
-	case "codex.api_key":
-		return firstEnv(accPrefix+"CODEX_API_KEY", "FEISHU_CODEX_API_KEY", "CODEX_API_KEY", "OPENAI_API_KEY")
-	case "codex.base_url":
-		return firstEnv(accPrefix+"CODEX_BASE_URL", "FEISHU_CODEX_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE")
-
-	// Speech (overlay + secrets)
-	case "speech.enabled":
-		return firstEnv(accPrefix+"SPEECH_ENABLED", "FEISHU_SPEECH_ENABLED")
-	case "speech.api_key":
-		return firstEnv(accPrefix+"SPEECH_API_KEY", "FEISHU_SPEECH_API_KEY")
-	case "speech.model":
-		return firstEnv(accPrefix+"SPEECH_MODEL", "FEISHU_SPEECH_MODEL")
-	case "speech.language":
-		return firstEnv(accPrefix+"SPEECH_LANGUAGE", "FEISHU_SPEECH_LANGUAGE")
-	case "speech.base_url":
-		return firstEnv(accPrefix+"SPEECH_BASE_URL", "FEISHU_SPEECH_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE")
-	case "speech.ffmpeg_bin":
-		return firstEnv(accPrefix+"SPEECH_FFMPEG_BIN", "FEISHU_SPEECH_FFMPEG_BIN")
-	}
-
-	return "", false
+	return cur, true
 }
 
 type missingGroup struct {
@@ -277,7 +218,7 @@ type missingGroup struct {
 }
 
 func groupMissing(items []missingItem) []missingGroup {
-	var feishuCreds, bot, progress, codex []missingItem
+	var feishuCreds, bot, progress, codex, sync []missingItem
 	for _, it := range items {
 		switch {
 		case it.Target == "secrets" && (it.Key == "app_id" || it.Key == "app_secret" || it.Key == "encrypt_key" || it.Key == "verification_token"):
@@ -286,6 +227,8 @@ func groupMissing(items []missingItem) []missingGroup {
 			progress = append(progress, it)
 		case strings.HasPrefix(it.Key, "codex."):
 			codex = append(codex, it)
+		case strings.HasPrefix(it.Key, "sync."):
+			sync = append(sync, it)
 		default:
 			bot = append(bot, it)
 		}
@@ -293,16 +236,19 @@ func groupMissing(items []missingItem) []missingGroup {
 
 	var out []missingGroup
 	if len(feishuCreds) > 0 {
-		out = append(out, missingGroup{name: "Feishu Credentials (secrets/local.yaml)", items: feishuCreds})
+		out = append(out, missingGroup{name: "Feishu Credentials (config/secrets/local.toml [feishu.<account>])", items: feishuCreds})
 	}
 	if len(bot) > 0 {
-		out = append(out, missingGroup{name: "Bot Settings (config/feishu/<account>.json)", items: bot})
+		out = append(out, missingGroup{name: "Bot Settings (config/feishu/bots.toml [bot.<account>])", items: bot})
 	}
 	if len(progress) > 0 {
-		out = append(out, missingGroup{name: "Progress Settings (config/feishu/<account>.json)", items: progress})
+		out = append(out, missingGroup{name: "Progress Settings (config/feishu/bots.toml [bot.<account>])", items: progress})
 	}
 	if len(codex) > 0 {
 		out = append(out, missingGroup{name: "Codex Settings", items: codex})
+	}
+	if len(sync) > 0 {
+		out = append(out, missingGroup{name: "Sync Backup Settings (config/secrets/local.toml [sync.<account>])", items: sync})
 	}
 	return out
 }
@@ -437,7 +383,7 @@ func setDotted(root map[string]any, dotted string, val any) {
 	cur[parts[len(parts)-1]] = val
 }
 
-func inspectMissing(store *configstore.Store, account string) (*inspectResult, map[string]any, error) {
+func inspectConfig(store *configstore.Store, account string) (*inspectResult, map[string]any, error) {
 	overlay, err := store.ReadOverlay(account)
 	if err != nil {
 		return nil, nil, err
@@ -446,17 +392,41 @@ func inspectMissing(store *configstore.Store, account string) (*inspectResult, m
 	if err != nil {
 		return nil, nil, err
 	}
-	effective := configstore.DeepMerge(secrets, overlay)
+	syncDefault, err := store.ReadSecretsEntry("sync", "default")
+	if err != nil {
+		return nil, nil, err
+	}
+	syncAccount, err := store.ReadSecretsEntry("sync", account)
+	if err != nil {
+		return nil, nil, err
+	}
+	effective := configstore.DeepMerge(secrets, overlay, map[string]any{
+		"sync": configstore.DeepMerge(syncDefault, syncAccount),
+	})
 
 	res := &inspectResult{Account: account, Repo: store.RepoRoot}
-	res.Paths.AccountJSON = store.AccountJSONPath(account)
-	res.Missing = buildMissing(effective)
+	res.Paths.AccountJSON = store.OverlayTargetLabel(account)
+	res.Items = buildItems(account)
 	return res, effective, nil
 }
 
 func applyPatches(store *configstore.Store, account string, req applyRequest) error {
 	if len(req.Secrets) > 0 {
-		if _, err := store.UpsertSecretsEntry("feishu", account, req.Secrets); err != nil {
+		feishuPatch := stripTopLevel(req.Secrets, "sync")
+		syncPatch := getTopLevelMap(req.Secrets, "sync")
+		if len(feishuPatch) > 0 {
+			if _, err := store.UpsertSecretsEntry("feishu", account, feishuPatch); err != nil {
+				return err
+			}
+		}
+		if len(syncPatch) > 0 {
+			if _, err := store.UpsertSecretsEntry("sync", account, syncPatch); err != nil {
+				return err
+			}
+		}
+	}
+	if len(req.SharedOverlay) > 0 {
+		if err := store.WriteOverlay("default", req.SharedOverlay); err != nil {
 			return err
 		}
 	}
@@ -466,6 +436,29 @@ func applyPatches(store *configstore.Store, account string, req applyRequest) er
 		}
 	}
 	return nil
+}
+
+func stripTopLevel(root map[string]any, key string) map[string]any {
+	out := map[string]any{}
+	for k, v := range root {
+		if k == key {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+func getTopLevelMap(root map[string]any, key string) map[string]any {
+	v, ok := root[key]
+	if !ok {
+		return map[string]any{}
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		return map[string]any{}
+	}
+	return m
 }
 
 func findRepoRoot() (string, error) {
@@ -491,12 +484,10 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
-func buildMissing(effective map[string]any) []missingItem {
-	var missing []missingItem
+func buildItems(account string) []missingItem {
+	items := []missingItem{}
 	add := func(item missingItem) {
-		if !hasDotted(effective, item.Key) {
-			missing = append(missing, item)
-		}
+		items = append(items, item)
 	}
 
 	// Feishu secrets
@@ -506,7 +497,8 @@ func buildMissing(effective map[string]any) []missingItem {
 	add(missingItem{Key: "verification_token", Prompt: "Feishu verification_token", Target: "secrets"})
 
 	// Bot identity
-	add(missingItem{Key: "bot_name", Prompt: "Bot name", Recommended: "飞书 Codex 助手", Optional: true, Target: "overlay"})
+	add(missingItem{Key: "enabled", Prompt: "Bot enabled (true/false)", Recommended: "true", Optional: true, Type: "bool", Target: "overlay"})
+	add(missingItem{Key: "bot_name", Prompt: "Bot name", Recommended: defaultBotName(account), Optional: true, Target: "overlay"})
 	add(missingItem{Key: "domain", Prompt: "Feishu domain (feishu|lark)", Recommended: "feishu", Optional: true, Target: "overlay"})
 	add(missingItem{Key: "reply_mode", Prompt: "Reply mode (codex)", Recommended: "codex", Optional: true, Target: "overlay"})
 	add(missingItem{Key: "reply_prefix", Prompt: "Reply prefix", Recommended: "AI 助手：", Optional: true, Target: "overlay"})
@@ -537,7 +529,6 @@ func buildMissing(effective map[string]any) []missingItem {
 	add(missingItem{Key: "fake_stream.max_updates", Prompt: "Fake stream max updates", Recommended: "120", Optional: true, Type: "int", Target: "overlay"})
 
 	// Codex (overlay runtime)
-	add(missingItem{Key: "codex.cwd", Prompt: "Codex workspace path inside container", Recommended: "/workspace", Target: "overlay"})
 	add(missingItem{Key: "codex.add_dirs", Prompt: "Codex additional dirs inside container (comma/newline separated)", Optional: true, Type: "string_list", Target: "overlay"})
 	add(missingItem{Key: "codex.bin", Prompt: "Codex CLI binary name/path", Recommended: "codex", Optional: true, Target: "overlay"})
 	add(missingItem{Key: "codex.model", Prompt: "Codex model (optional)", Optional: true, Target: "overlay"})
@@ -560,5 +551,44 @@ func buildMissing(effective map[string]any) []missingItem {
 	add(missingItem{Key: "speech.base_url", Prompt: "Speech base url", Recommended: "https://api.openai.com/v1", Optional: true, Target: "overlay"})
 	add(missingItem{Key: "speech.ffmpeg_bin", Prompt: "ffmpeg binary path (optional)", Optional: true, Target: "overlay"})
 
-	return missing
+	// Sync backup (secrets)
+	add(missingItem{Key: "sync.provider", Prompt: "Sync provider (webdav)", Recommended: "webdav", Optional: true, Target: "secrets"})
+	add(missingItem{Key: "sync.workspace_id", Prompt: "Sync workspace id", Recommended: defaultSyncWorkspaceID(account), Optional: true, Target: "secrets"})
+	add(missingItem{Key: "sync.webdav.url", Prompt: "WebDAV url", Optional: true, Target: "secrets"})
+	add(missingItem{Key: "sync.webdav.username", Prompt: "WebDAV username", Optional: true, Target: "secrets"})
+	add(missingItem{Key: "sync.webdav.password", Prompt: "WebDAV password", Optional: true, Target: "secrets"})
+	add(missingItem{Key: "sync.webdav.base_path", Prompt: "WebDAV base path", Recommended: "/SunCodexClaw/backups", Optional: true, Target: "secrets"})
+
+	return items
+}
+
+func defaultSyncWorkspaceID(account string) string {
+	raw := strings.TrimSpace(account)
+	if raw == "" {
+		return "default"
+	}
+	var b strings.Builder
+	for _, r := range raw {
+		switch {
+		case r == '/' || r == '\\' || r == ' ' || r == ':':
+			b.WriteByte('-')
+		case r == '.':
+			b.WriteByte('-')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	out := strings.Trim(b.String(), "-.")
+	if out == "" {
+		return "default"
+	}
+	return out
+}
+
+func defaultBotName(account string) string {
+	account = strings.TrimSpace(account)
+	if account == "" {
+		return "飞书 Codex 助手"
+	}
+	return "飞书 Codex 助手 " + account
 }

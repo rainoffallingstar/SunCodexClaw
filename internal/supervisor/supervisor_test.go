@@ -15,7 +15,7 @@ func TestStatusInfosShowsLastErrorWhenStopped(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(configDir, "assistant.json"), []byte("{}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(configDir, "bots.toml"), []byte("[bot.assistant]\nenabled = true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -51,7 +51,7 @@ func TestStatusInfosShowsStalePIDAndLastError(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(configDir, "assistant.json"), []byte("{}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(configDir, "bots.toml"), []byte("[bot.assistant]\nenabled = true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -84,5 +84,45 @@ func TestStatusInfosShowsStalePIDAndLastError(t *testing.T) {
 	}
 	if infos[0].LastError == "" {
 		t.Fatalf("expected last_error, got empty")
+	}
+}
+
+func TestDiscoverAccountsReturnsEnabledBotsOnly(t *testing.T) {
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, "config", "feishu"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "config", "secrets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "config", "feishu", "bots.toml"), []byte(""+
+		"[bot.assistant]\n"+
+		"enabled = true\n\n"+
+		"[bot.reviewer]\n"+
+		"enabled = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "config", "secrets", "local.toml"), []byte(""+
+		"[feishu.assistant]\napp_id = \"cli_a\"\n\n"+
+		"[feishu.reviewer]\napp_id = \"cli_b\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(Options{RepoRoot: repo})
+	got, err := s.DiscoverAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "assistant" {
+		t.Fatalf("DiscoverAccounts() = %v, want [assistant]", got)
+	}
+
+	all, err := s.DiscoverAllAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("DiscoverAllAccounts() = %v, want two accounts", all)
 	}
 }

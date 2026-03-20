@@ -1,8 +1,8 @@
 const fs = require('fs');
 const path = require('path');
-const YAML = require('yaml');
+const { asPlainObject, stringifyToml, readTomlIfExists, ensureObjectPath } = require('./toml_mini');
 
-const DEFAULT_SECRETS_FILE = path.resolve(__dirname, '..', '..', 'config', 'secrets', 'local.yaml');
+const DEFAULT_SECRETS_FILE = path.resolve(__dirname, '..', '..', 'config', 'secrets', 'local.toml');
 
 let cachedFilePath = '';
 let cachedMtimeMs = -1;
@@ -10,9 +10,11 @@ let cachedDoc = null;
 
 function resolveSecretsFile() {
   const explicit = String(
-    process.env.SUNCODEXCLAW_SECRET_YAML
+    process.env.SUNCODEXCLAW_LOCAL_TOML
+    || process.env.CODEX_CLAW_LOCAL_TOML
+    || process.env.SUNCODEXCLAW_SECRET_TOML
+    || process.env.CODEX_CLAW_SECRET_TOML
     || process.env.SUNCODEXCLAW_SECRETS_FILE
-    || process.env.CODEX_CLAW_SECRET_YAML
     || process.env.CODEX_CLAW_SECRETS_FILE
     || ''
   ).trim();
@@ -33,21 +35,15 @@ function loadLocalSecrets() {
     return { filePath, doc: cachedDoc };
   }
 
-  const raw = fs.readFileSync(filePath, 'utf8');
-  const parsed = YAML.parse(raw) || {};
+  const parsed = readTomlIfExists(filePath) || {};
   if (parsed && typeof parsed !== 'object') {
-    throw new Error(`invalid yaml in ${filePath}: expected mapping at root`);
+    throw new Error(`invalid toml in ${filePath}: expected mapping at root`);
   }
 
   cachedFilePath = filePath;
   cachedMtimeMs = stat.mtimeMs;
   cachedDoc = parsed;
   return { filePath, doc: parsed };
-}
-
-function asPlainObject(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return value;
 }
 
 function cloneSerializable(value) {
@@ -78,14 +74,8 @@ function readConfigRoot(section, fallback = undefined) {
   const key = String(section || '').trim();
   if (!key) return fallback;
   const { doc } = loadLocalSecrets();
-  const configRoot = asPlainObject(doc?.config);
-  const fromConfig = asPlainObject(configRoot[key]);
+  const fromConfig = asPlainObject(doc?.[key]);
   if (Object.keys(fromConfig).length > 0) return fromConfig;
-
-  // Backward compatibility for earlier local.yaml layouts.
-  const legacyValues = asPlainObject(doc?.values);
-  const fromLegacy = asPlainObject(legacyValues[key]);
-  if (Object.keys(fromLegacy).length > 0) return fromLegacy;
   return fallback;
 }
 
@@ -105,7 +95,6 @@ function listConfigEntryNames(section) {
 
 function normalizeSecretsDoc(doc) {
   const nextDoc = asPlainObject(cloneSerializable(doc) || {});
-  nextDoc.config = asPlainObject(nextDoc.config);
   return nextDoc;
 }
 
@@ -113,7 +102,7 @@ function writeLocalSecrets(doc) {
   const filePath = resolveSecretsFile();
   const nextDoc = normalizeSecretsDoc(doc);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const body = YAML.stringify(nextDoc).trimEnd();
+  const body = stringifyToml(nextDoc).trimEnd();
   fs.writeFileSync(filePath, `${body}\n`, 'utf8');
 
   const stat = fs.statSync(filePath);
@@ -132,15 +121,12 @@ function upsertConfigEntry(section, name, value, options = {}) {
   const merge = options.merge !== false;
   const { doc } = loadLocalSecrets();
   const nextDoc = normalizeSecretsDoc(doc);
-  const configRoot = asPlainObject(nextDoc.config);
-  const sectionRoot = asPlainObject(configRoot[sectionName]);
+  const sectionRoot = ensureObjectPath(nextDoc, [sectionName]);
   const currentValue = asPlainObject(sectionRoot[entryName]);
   const incomingValue = asPlainObject(cloneSerializable(value) || {});
   sectionRoot[entryName] = merge
     ? deepMerge(currentValue, incomingValue)
     : incomingValue;
-  configRoot[sectionName] = sectionRoot;
-  nextDoc.config = configRoot;
 
   return {
     filePath: writeLocalSecrets(nextDoc),

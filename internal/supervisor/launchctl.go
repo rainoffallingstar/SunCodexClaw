@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"suncodexclaw/internal/configstore"
 )
 
 var (
@@ -229,7 +231,7 @@ func (s *Supervisor) startOneLaunchctl(account string) (string, error) {
 	if ok, err := s.configExistsForAccount(account); err != nil {
 		return "", err
 	} else if !ok {
-		return "", fmt.Errorf("missing config for %s: %s (and no local.yaml entry)", account, filepath.Join(s.opts.ConfigDir, account+".json"))
+		return "", fmt.Errorf("missing config for %s: %s (and no config/secrets/local.toml entry)", account, configstore.NewStore(s.opts.RepoRoot).OverlayTargetLabel(account))
 	}
 
 	if pid, ok := s.launchctlRunningPID(account); ok {

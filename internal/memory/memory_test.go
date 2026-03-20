@@ -113,3 +113,31 @@ func TestSearchBlankQueryReturnsNewestFirst(t *testing.T) {
 		t.Fatalf("Search(blank)[0].ID = %q, want %q", results[0].ID, second.ID)
 	}
 }
+
+func TestLibraryStoreSeparatesRobotMemories(t *testing.T) {
+	repo := t.TempDir()
+	assistant := NewLibraryStore(repo, "assistant")
+	helper := NewLibraryStore(repo, "helper")
+
+	if _, err := assistant.Add("assistant memory", "feishu/assistant/oc_1", nil); err != nil {
+		t.Fatalf("assistant.Add() error = %v", err)
+	}
+	if _, err := helper.Add("helper memory", "feishu/helper/oc_2", nil); err != nil {
+		t.Fatalf("helper.Add() error = %v", err)
+	}
+
+	assistantEntries, err := assistant.ListEntries()
+	if err != nil {
+		t.Fatalf("assistant.ListEntries() error = %v", err)
+	}
+	helperEntries, err := helper.ListEntries()
+	if err != nil {
+		t.Fatalf("helper.ListEntries() error = %v", err)
+	}
+	if len(assistantEntries) != 1 || assistantEntries[0].Text != "assistant memory" {
+		t.Fatalf("assistant entries = %#v", assistantEntries)
+	}
+	if len(helperEntries) != 1 || helperEntries[0].Text != "helper memory" {
+		t.Fatalf("helper entries = %#v", helperEntries)
+	}
+}

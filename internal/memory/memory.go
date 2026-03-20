@@ -25,14 +25,23 @@ type Entry struct {
 
 type Store struct {
 	RepoRoot string
+	Library  string
 }
 
 func NewStore(repoRoot string) *Store {
-	return &Store{RepoRoot: repoRoot}
+	return NewLibraryStore(repoRoot, "default")
+}
+
+func NewLibraryStore(repoRoot, library string) *Store {
+	name := sanitizeLibrary(library)
+	if name == "" {
+		name = "default"
+	}
+	return &Store{RepoRoot: repoRoot, Library: name}
 }
 
 func (s *Store) memoryDir() string {
-	return filepath.Join(s.RepoRoot, "config", "memory", "entries")
+	return filepath.Join(s.RepoRoot, "config", "memory", "libraries", s.Library, "entries")
 }
 
 func (s *Store) EntryPath(id string) string {
@@ -250,4 +259,16 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func sanitizeLibrary(raw string) string {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return ""
+	}
+	text = strings.ReplaceAll(text, "\\", "-")
+	text = strings.ReplaceAll(text, "/", "-")
+	text = strings.ReplaceAll(text, " ", "-")
+	text = strings.Trim(text, "-.")
+	return text
 }

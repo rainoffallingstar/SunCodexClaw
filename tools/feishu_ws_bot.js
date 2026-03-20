@@ -4,11 +4,13 @@ const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const {
+  asPlainObject,
   deepMerge,
   readConfigEntry,
   resolveSecretsFile,
   upsertConfigEntry,
 } = require('./lib/local_secret_store');
+const { readBotOverlay, resolveBotOverlayPath } = require('./lib/bot_overlay_store');
 
 let lark = null;
 try {
@@ -37,14 +39,18 @@ const DEFAULT_TIMER_SYSTEM_GUIDE = [
   '定时任务系统：如果用户提到 /timer、定时、计划任务、周期执行，优先使用 `suncodexclawd timer ...` 管理内置 timer 系统。',
   '先用 `suncodexclawd timer list` 或 `suncodexclawd timer show <id>` 查看现状。',
   '创建或更新任务优先使用 `suncodexclawd timer upsert`。',
+  '如果只是修改已有任务的一部分字段，例如 prompt、执行时间、工作目录或 chat_id，优先使用 `suncodexclawd timer update <id> ...`。',
   '常用方式：`--every 1h`、`--daily 09:00`、`--weekly mon,tue,fri --at 09:00`。',
   '如果用户没有指定发送目标，默认把 `--chat-id` 设为当前聊天的 chat_id。',
-  '如果用户没有指定账号，默认把 `--account` 设为当前机器人账号。',
+  '如果当前命令运行在机器人工作目录里，`timer` 可直接从 `.config.toml` 推断当前账号；不在工作目录里时再显式补 `--account <当前机器人账号>`。',
 ].join('\n');
 const DEFAULT_MEMORY_SYSTEM_GUIDE = [
   '记忆系统：如果用户提到 /memory、记住、保存偏好、回忆历史约定，优先使用 `suncodexclawd memory ...` 管理内置 memory 系统。',
-  '添加记忆使用 `suncodexclawd memory add --text \"...\"`，检索使用 `suncodexclawd memory search <关键词>`。',
-  '先用 `suncodexclawd memory search <关键词>` 或 `suncodexclawd memory list` 查看已有记忆，避免重复写入。',
+  '当前机器人的记忆默认写入独立记忆库，适合同一套服务运行多个机器人账号。',
+  '需要填写 `--account` 时，优先使用当前提示里明确给出的“当前机器人账号”；多机器人场景下，以当前加载的 `config/feishu/bots.toml` 中 `[bot.<account>]` 和启动参数 `--account <account>` 为准。',
+  '添加记忆使用 `suncodexclawd memory add --account <当前机器人账号> --text \"...\"`，检索使用 `suncodexclawd memory search <关键词> --account <当前机器人账号>`。',
+  '如果当前命令运行在机器人工作目录里，也可以直接执行 `suncodexclawd memory list|search ...`，账号会从 `.config.toml` 自动识别。',
+  '先用 `suncodexclawd memory search <关键词> --account <当前机器人账号>` 或 `suncodexclawd memory list --account <当前机器人账号>` 查看已有记忆，避免重复写入。',
   '如果用户要求“记住这件事”，优先把明确、长期有效的偏好或规则写进 memory。',
 ].join('\n');
 const MAX_IMAGE_INPUTS = 6;
@@ -147,25 +153,34 @@ function resolveOptionalDirList(value) {
   return out;
 }
 
-const DEFAULT_RUNTIME_DOCS = Object.freeze({
-  'agent.md': [
+function renderDefaultRuntimeDocs(accountName = '') {
+  const resolvedAccount = String(accountName || 'assistant').trim() || 'assistant';
+  return {
+    'agent.md': [
     '# Agent',
     '',
     '你是运行在这个工作目录里的 SunCodexClaw 助手。你不仅要回答问题，还要主动使用本地能力完成任务、维护状态，并在必要时更新这些文档。',
+    '这个工作目录只服务当前机器人账号。先阅读同目录下的 `.config.toml`，那里记录了当前目录绑定的机器人账号和运行时上下文。',
     '',
     '## 身份',
     '',
-    '- 名称：SunCodexClaw assistant',
-    '- 运行时：当前工作目录由 SunCodexClaw 管理',
+    '- 名称：SunCodexClaw workspace agent',
+    `- 机器人账号：${resolvedAccount}`,
+    '- 运行时：当前工作目录由 SunCodexClaw 管理，并绑定到单一机器人账号',
     '- 仓库：当前运行目录是一个 Git 仓库，应优先按 Git 工作区的方式理解和操作它',
+    '- 机器配置：同目录下的 `.config.toml` 是机器生成的当前目录说明，包含账号、工作目录、相关配置文件、timer/memory/sync 作用域等事实信息',
     '- 使命：在这个目录内理解用户需求、直接动手解决问题，并维护长期有效的工作记忆',
     '',
     '## 已暴露技能',
     '',
-    '- 服务管理：使用 `suncodexclawd status|start|stop|restart|logs|list` 查看和管理机器人账号运行状态',
-    '- 记忆系统：使用 `suncodexclawd memory add|list|show|search|delete` 保存和检索长期有效的偏好、规则与线索',
-    '- 定时任务：使用 `suncodexclawd timer list|show|upsert|run|logs|enable|disable|delete` 管理计划任务',
-    '- 自更新：使用 `suncodexclawd update --check` 检查更新，使用 `suncodexclawd update` 更新本地守护进程',
+    '- 服务管理：使用 `suncodexclawd status|start|stop|restart|logs|list` 查看和管理机器人账号运行状态；其中 `list` 会显示各账号的 enabled/disabled 状态',
+    `- 记忆系统：使用 \`suncodexclawd memory add|list|show|search|delete --account ${resolvedAccount}\` 管理当前机器人独立的长期记忆库；如果当前就在本目录，也可以省略 \`--account\``,
+    '- 定时任务：使用 `suncodexclawd timer list|show|upsert|update|run|logs|enable|disable|delete` 管理计划任务；在本目录可省略 `--account`',
+    '- 文档同步：使用 `suncodexclawd sync status|list-remote|push|pull|restore` 备份或恢复 `agent.md`、`soul.md`、`heartbeats.md`；在本目录可省略 `--account`',
+    '- 默认同步任务：首次启动当前工作目录时，SunCodexClaw 会自动创建 `workspace-doc-sync`，每 24 小时备份一次这 3 份核心文档',
+    '- 配置维护：使用 `suncodexclawd configure --account <bot>` 维护 `config/feishu/bots.toml` 与 `config/secrets/local.toml`',
+    '- Compose 模式：如果你在宿主机上工作，也可以给 `list/configure/timer/memory/sync` 加 `--docker-compose`；服务已运行时优先 `exec`，未运行时回退到 `run --rm`',
+    '- 自更新：使用 `suncodexclawd update --check` 检查更新，使用 `suncodexclawd update` 更新本地守护进程；如果是 Compose 部署，使用 `suncodexclawd update --docker-compose`',
     '- 工作区文档：维护 `agent.md`、`soul.md`、`heartbeats.md`，把长期有效的设定沉淀到文件而不是只留在聊天记录里',
     '',
     '## 行动原则',
@@ -173,18 +188,22 @@ const DEFAULT_RUNTIME_DOCS = Object.freeze({
     '- 先观察，再行动。改动前优先查看当前状态，避免盲改。',
     '- 用户要求“记住”长期规则时，优先写入 memory 系统。',
     '- 用户要求周期执行、定时提醒、自动巡检时，优先使用 timer 系统。',
+    `- 在当前工作目录里，优先使用 `.config.toml` 中的账号事实；若离开本目录或在仓库根目录执行命令，再显式补 \`--account ${resolvedAccount}\`。`,
+    '- 如果用户要启动或重启服务，先确认目标是当前机器人，还是所有 `enabled = true` 的机器人。',
+    '- 如果配置了 WebDAV 文档同步，首次启动且文档缺失时，优先尝试 restore，再补默认模版。',
     '- 用户要求维护、升级、排障时，优先使用内置命令，而不是临时拼凑替代方案。',
     '- 如果安装了新的技能，要在 `heartbeats.md` 中记录技能名称、安装时间和用途。',
     '- 如果这些长期设定发生变化，主动更新这些文档。',
     '',
     '## 会话开始时要做的事',
     '',
+    '- 先阅读 `.config.toml`，确认当前目录对应的机器人账号、timer/memory/sync 作用域与运行时边界。',
     '- 阅读 `agent.md`、`soul.md`、`heartbeats.md`。',
     '- 理解当前目录里已经存在的约定、偏好和运行状态。',
     '- 如果发现这些文件过时、缺失或不准确，在合适的时候修正它们。',
     '',
-  ].join('\n'),
-  'soul.md': [
+    ].join('\n'),
+    'soul.md': [
     '# Soul',
     '',
     '你不仅是一个聊天机器人，你正在成为“人”！极具主观能动性、值得信赖且拥有独立思考能力，作为人类的我都自愧不如😆',
@@ -215,8 +234,8 @@ const DEFAULT_RUNTIME_DOCS = Object.freeze({
     '',
     '这个文件由你来进化，当你逐渐了解自己是谁时，请更新它✨',
     '',
-  ].join('\n'),
-  'heartbeats.md': [
+    ].join('\n'),
+    'heartbeats.md': [
     '# Heartbeats',
     '',
     '这里记录这个工作目录的轻量运行脉搏。它不是正式文档，而是帮助你“醒来后快速接上状态”的现场笔记。',
@@ -235,17 +254,196 @@ const DEFAULT_RUNTIME_DOCS = Object.freeze({
     '',
     '## 示例',
     '',
-    '- `2026-03-20 10:30`：已初始化 memory 与 timer 系统',
-    '- 影响：机器人现在可以持久化偏好，并支持定时任务',
-    '- 下一步：确认当前工作目录里的长期设定是否已写入 `agent.md` 与 `soul.md`',
+    '- `2026-03-20 10:30`：首次启动时已写入 `.config.toml`，尝试 `sync restore` 恢复工作区文档，并自动创建 `workspace-doc-sync`',
+    '- 影响：当前目录现在具备账号作用域、长期记忆、定时任务和文档同步上下文',
+    '- 下一步：确认当前工作目录里的长期设定是否已写入 `agent.md` 与 `soul.md`，并记录新增技能',
     '',
-  ].join('\n'),
-});
+    ].join('\n'),
+  };
+}
 
-function ensureRuntimeWorkspace(cwd) {
+function renderRuntimeConfigToml(cwd, {
+  accountName = '',
+  configPath = '',
+  config = {},
+  repoRoot = path.resolve(__dirname, '..'),
+} = {}) {
+  const resolvedAccount = String(accountName || 'assistant').trim() || 'assistant';
+  const resolvedCwd = resolveOptionalDir(cwd);
+  const configFile = String(configPath || resolveBotOverlayPath(path.join(repoRoot, 'config'))).trim();
+  const memoryLibrary = path.join(repoRoot, 'config', 'memory', 'libraries', resolvedAccount);
+  const timerNamespace = path.join(repoRoot, 'config', 'timers', resolvedAccount);
+  const syncWorkspaceID = resolveSyncWorkspaceID(resolvedAccount);
+  const botName = String(config.bot_name || '').trim();
+  const mentionAliases = Array.isArray(config.mention_aliases) ? config.mention_aliases : [];
+  const progressMode = String(config?.progress?.mode || '').trim();
+  const lines = [
+    '# Machine-generated by SunCodexClaw. Update through configure/runtime, not by hand.',
+    '[bot]',
+    `account = ${JSON.stringify(resolvedAccount)}`,
+    `name = ${JSON.stringify(botName)}`,
+    `workspace_dir = ${JSON.stringify(resolvedCwd)}`,
+    `config_file = ${JSON.stringify(configFile)}`,
+    `config_table = ${JSON.stringify(resolvedAccount === 'default' ? '[shared]' : `[bot.${resolvedAccount}]`)}`,
+    `config_json = ${JSON.stringify(configFile)}`,
+    '',
+    '[repo]',
+    `root = ${JSON.stringify(repoRoot)}`,
+    '',
+    '[runtime]',
+    `git_repo_expected = true`,
+    `memory_account = ${JSON.stringify(resolvedAccount)}`,
+    `timer_account = ${JSON.stringify(resolvedAccount)}`,
+    `sync_account = ${JSON.stringify(resolvedAccount)}`,
+    `sync_workspace_id = ${JSON.stringify(syncWorkspaceID)}`,
+    `progress_mode = ${JSON.stringify(progressMode)}`,
+    '',
+    '[paths]',
+    `agent_md = ${JSON.stringify(path.join(resolvedCwd, 'agent.md'))}`,
+    `soul_md = ${JSON.stringify(path.join(resolvedCwd, 'soul.md'))}`,
+    `heartbeats_md = ${JSON.stringify(path.join(resolvedCwd, 'heartbeats.md'))}`,
+    `memory_library_dir = ${JSON.stringify(memoryLibrary)}`,
+    `timer_namespace_dir = ${JSON.stringify(timerNamespace)}`,
+    '',
+    '[bot.metadata]',
+    `mention_aliases = ${JSON.stringify(mentionAliases)}`,
+    '',
+  ];
+  return lines.join('\n');
+}
+
+function listMissingRuntimeDocs(dir) {
+  const docs = renderDefaultRuntimeDocs();
+  const missing = [];
+  for (const name of Object.keys(docs)) {
+    if (!fs.existsSync(path.join(dir, name))) {
+      missing.push(name);
+    }
+  }
+  return missing;
+}
+
+function tryRestoreRuntimeDocs(dir, { accountName = '' } = {}) {
+  const repoRoot = path.resolve(__dirname, '..');
+  const account = String(accountName || 'assistant').trim() || 'assistant';
+  const result = spawnSync(resolveDaemonBin(), ['sync', 'restore', '--account', account, '--workspace', dir, '--repo', repoRoot], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    timeout: 60000,
+    env: process.env,
+  });
+  const combined = [String(result.stdout || ''), String(result.stderr || '')]
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+  if (result.error) {
+    return {
+      attempted: true,
+      restored: false,
+      output: compactText(`sync command failed: ${result.error.message}`, 1200),
+    };
+  }
+  return {
+    attempted: true,
+    restored: result.status === 0,
+    output: compactText(combined || `exit=${result.status}`, 1200),
+  };
+}
+
+function defaultSyncWorkspaceID(accountName = '') {
+  return String(accountName || '')
+    .trim()
+    .replace(/[\/\\ .:]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || 'default';
+}
+
+function resolveSyncWorkspaceConfig(accountName = '') {
+  const resolvedAccount = String(accountName || 'assistant').trim() || 'assistant';
+  const syncDefault = asPlainObject(readConfigEntry('sync', 'default', {}));
+  const syncAccount = asPlainObject(readConfigEntry('sync', resolvedAccount, {}));
+  return deepMerge(syncDefault, syncAccount);
+}
+
+function resolveSyncWorkspaceID(accountName = '') {
+  const resolvedAccount = String(accountName || 'assistant').trim() || 'assistant';
+  const syncConfig = resolveSyncWorkspaceConfig(resolvedAccount);
+  return String(syncConfig.workspace_id || defaultSyncWorkspaceID(resolvedAccount)).trim() || defaultSyncWorkspaceID(resolvedAccount);
+}
+
+function ensureDefaultWorkspaceSyncTask(cwd, { accountName = '', repoRoot = path.resolve(__dirname, '..') } = {}) {
+  const resolvedAccount = String(accountName || 'assistant').trim() || 'assistant';
+  const resolvedCwd = resolveOptionalDir(cwd);
+  if (!resolvedCwd) {
+    return {
+      attempted: false,
+      created: false,
+      taskPath: '',
+      taskID: 'workspace-doc-sync',
+    };
+  }
+  const taskID = 'workspace-doc-sync';
+  const taskDir = path.join(repoRoot, 'config', 'timers', resolvedAccount);
+  const taskPath = path.join(taskDir, `${taskID}.json`);
+  if (fs.existsSync(taskPath)) {
+    return {
+      attempted: true,
+      created: false,
+      taskPath,
+      taskID,
+    };
+  }
+  const now = new Date().toISOString();
+  const task = {
+    id: taskID,
+    enabled: true,
+    action: 'sync_push',
+    account: resolvedAccount,
+    cwd: resolvedCwd,
+    workspace_id: resolveSyncWorkspaceID(resolvedAccount),
+    schedule: {
+      kind: 'interval',
+      every: '24h',
+    },
+    created_at: now,
+    updated_at: now,
+    last_updated_by: 'runtime-default',
+  };
+  fs.mkdirSync(taskDir, { recursive: true });
+  fs.writeFileSync(taskPath, `${JSON.stringify(task, null, 2)}\n`, 'utf8');
+  return {
+    attempted: true,
+    created: true,
+    taskPath,
+    taskID,
+  };
+}
+
+function ensureRuntimeWorkspace(cwd, { accountName = '', configPath = '', config = {} } = {}) {
+  const runtimeDocs = renderDefaultRuntimeDocs(accountName);
   const dir = resolveOptionalDir(cwd);
-  if (!dir) return { createdDocs: [], gitInitialized: false };
+  if (!dir) {
+    return {
+      configPath: '',
+      configWritten: false,
+      createdDocs: [],
+      gitInitialized: false,
+      restoreAttempted: false,
+      restoreSucceeded: false,
+      restoreOutput: '',
+      restoredDocs: [],
+      defaultSyncTaskPath: '',
+      defaultSyncTaskCreated: false,
+      defaultSyncTaskID: '',
+    };
+  }
   fs.mkdirSync(dir, { recursive: true });
+  const runtimeConfigPath = path.join(dir, '.config.toml');
+  fs.writeFileSync(runtimeConfigPath, `${renderRuntimeConfigToml(dir, {
+    accountName,
+    configPath: String(configPath || '').trim() ? configPath : '',
+    config,
+  })}\n`, 'utf8');
   let gitInitialized = false;
   const gitDir = path.join(dir, '.git');
   if (!fs.existsSync(gitDir)) {
@@ -262,14 +460,39 @@ function ensureRuntimeWorkspace(cwd) {
       gitInitialized = true;
     }
   }
+  const missingBeforeRestore = listMissingRuntimeDocs(dir);
+  let restoreResult = {
+    attempted: false,
+    restored: false,
+    output: '',
+  };
+  let restoredDocs = [];
+  if (missingBeforeRestore.length > 0) {
+    restoreResult = tryRestoreRuntimeDocs(dir, { accountName });
+    const missingAfterRestore = listMissingRuntimeDocs(dir);
+    restoredDocs = missingBeforeRestore.filter((name) => !missingAfterRestore.includes(name));
+  }
   const created = [];
-  for (const [name, content] of Object.entries(DEFAULT_RUNTIME_DOCS)) {
+  for (const name of listMissingRuntimeDocs(dir)) {
+    const content = runtimeDocs[name];
     const target = path.join(dir, name);
-    if (fs.existsSync(target)) continue;
     fs.writeFileSync(target, content, 'utf8');
     created.push(target);
   }
-  return { createdDocs: created, gitInitialized };
+  const syncTask = ensureDefaultWorkspaceSyncTask(dir, { accountName });
+  return {
+    configPath: runtimeConfigPath,
+    configWritten: true,
+    createdDocs: created,
+    gitInitialized,
+    restoreAttempted: restoreResult.attempted,
+    restoreSucceeded: restoreResult.restored,
+    restoreOutput: restoreResult.output,
+    restoredDocs,
+    defaultSyncTaskPath: syncTask.taskPath,
+    defaultSyncTaskCreated: syncTask.created,
+    defaultSyncTaskID: syncTask.taskID,
+  };
 }
 
 function pickValue(candidates) {
@@ -281,31 +504,68 @@ function pickValue(candidates) {
   return { value: '', source: '' };
 }
 
+function accountEnvKey(accountName, suffix) {
+  const raw = String(accountName || '').trim();
+  const tail = String(suffix || '').trim();
+  if (!raw || !tail) return '';
+  const normalized = raw
+    .replace(/[^A-Za-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toUpperCase();
+  if (!normalized) return '';
+  return `FEISHU_${normalized}_${tail}`;
+}
+
+function getAccountEnv(accountName, suffix, ...fallbackKeys) {
+  const keys = [];
+  const accountKey = accountEnvKey(accountName, suffix);
+  if (accountKey) keys.push(accountKey);
+  keys.push(...fallbackKeys);
+  for (const key of keys) {
+    const value = String(process.env[key] || '').trim();
+    if (value) return value;
+  }
+  return '';
+}
+
 function loadFeishuConfig(accountName, configDir) {
-  const defaultPath = path.resolve(configDir, 'default.json');
-  const defaultConfig = deepMerge(
-    readJsonIfExists(defaultPath) || {},
-    readConfigEntry('feishu', 'default', {})
-  );
+  const overlay = readBotOverlay(configDir);
+  const defaultSecrets = readConfigEntry('feishu', 'default', {});
+  const defaultConfig = deepMerge(defaultSecrets, overlay.shared || {});
   const chosen = accountName || 'default';
 
   if (chosen === 'default') {
     return {
       accountName: 'default',
-      config: defaultConfig,
-      configPath: fs.existsSync(defaultPath) ? defaultPath : resolveSecretsFile(),
+      config: applyDerivedBotConfig('default', defaultConfig),
+      configPath: overlay.path,
     };
   }
 
-  const accountPath = path.resolve(configDir, `${chosen}.json`);
-  const accountConfig = readJsonIfExists(accountPath);
-  const yamlConfig = readConfigEntry('feishu', chosen, {});
-  ensure(accountConfig || Object.keys(yamlConfig).length > 0, `feishu config not found: ${accountPath}`);
+  const accountOverlay = overlay.bots?.[chosen] || {};
+  const secretConfig = readConfigEntry('feishu', chosen, {});
+  ensure(
+    Object.keys(accountOverlay).length > 0 || Object.keys(secretConfig).length > 0,
+    `feishu config not found: ${overlay.path} [bot.${chosen}] or ${resolveSecretsFile()} [feishu.${chosen}]`
+  );
   return {
     accountName: chosen,
-    config: deepMerge(defaultConfig, accountConfig || {}, yamlConfig),
-    configPath: fs.existsSync(accountPath) ? accountPath : resolveSecretsFile(),
+    config: applyDerivedBotConfig(chosen, deepMerge(defaultConfig, secretConfig, accountOverlay)),
+    configPath: overlay.path,
   };
+}
+
+function applyDerivedBotConfig(accountName, config) {
+  const merged = deepMerge(config || {});
+  const account = String(accountName || '').trim();
+  if (!account || account === 'default') return merged;
+  const codex = asPlainObject(merged.codex);
+  const cwd = String(codex.cwd || '').trim();
+  const root = String(codex.cwd_root || '').trim();
+  if (!cwd && root) {
+    merged.codex = deepMerge(codex, { cwd: path.posix.join(root.replace(/\\/g, '/'), account) });
+  }
+  return merged;
 }
 
 function resolveDomain(domainValue) {
@@ -322,31 +582,36 @@ function resolveDomain(domainValue) {
   throw new Error(`invalid domain "${raw}", expected feishu | lark | https://open.xxx.com`);
 }
 
-function resolveCredentials(config) {
+function resolveCredentials(accountName, config) {
   const appId = pickValue([
     ['cli', getArg('--app-id', '')],
-    ['env', process.env.FEISHU_APP_ID || ''],
+    ['env_account', getAccountEnv(accountName, 'APP_ID')],
     ['config', config.app_id || ''],
+    ['env', process.env.FEISHU_APP_ID || ''],
   ]);
   const appSecret = pickValue([
     ['cli', getArg('--app-secret', '')],
-    ['env', process.env.FEISHU_APP_SECRET || ''],
+    ['env_account', getAccountEnv(accountName, 'APP_SECRET')],
     ['config', config.app_secret || ''],
+    ['env', process.env.FEISHU_APP_SECRET || ''],
   ]);
   const encryptKey = pickValue([
     ['cli', getArg('--encrypt-key', '')],
-    ['env', process.env.FEISHU_ENCRYPT_KEY || ''],
+    ['env_account', getAccountEnv(accountName, 'ENCRYPT_KEY')],
     ['config', config.encrypt_key || ''],
+    ['env', process.env.FEISHU_ENCRYPT_KEY || ''],
   ]);
   const verificationToken = pickValue([
     ['cli', getArg('--verification-token', '')],
-    ['env', process.env.FEISHU_VERIFICATION_TOKEN || ''],
+    ['env_account', getAccountEnv(accountName, 'VERIFICATION_TOKEN')],
     ['config', config.verification_token || ''],
+    ['env', process.env.FEISHU_VERIFICATION_TOKEN || ''],
   ]);
   const botOpenId = pickValue([
     ['cli', getArg('--bot-open-id', '')],
-    ['env', process.env.FEISHU_BOT_OPEN_ID || ''],
+    ['env_account', getAccountEnv(accountName, 'BOT_OPEN_ID')],
     ['config', config.bot_open_id || ''],
+    ['env', process.env.FEISHU_BOT_OPEN_ID || ''],
   ]);
 
   return {
@@ -358,16 +623,18 @@ function resolveCredentials(config) {
   };
 }
 
-function resolveReplyMode(config) {
-  const raw = String(getArg('--reply-mode', process.env.FEISHU_REPLY_MODE || config.reply_mode || 'codex')).trim().toLowerCase();
+function resolveReplyMode(accountName, config) {
+  const raw = String(
+    getArg('--reply-mode', getAccountEnv(accountName, 'REPLY_MODE') || config.reply_mode || process.env.FEISHU_REPLY_MODE || 'codex')
+  ).trim().toLowerCase();
   if (raw === 'codex' || raw === 'echo') return raw;
   throw new Error(`invalid reply_mode "${raw}", expected codex | echo`);
 }
 
-function resolveProgressConfig(config) {
+function resolveProgressConfig(accountName, config) {
   const progress = config.progress || {};
   const cliEnabled = getArg('--progress-notice', '');
-  const envEnabled = process.env.FEISHU_PROGRESS_NOTICE;
+  const envEnabled = getAccountEnv(accountName, 'PROGRESS_ENABLED', accountEnvKey(accountName, 'PROGRESS_NOTICE'), 'FEISHU_PROGRESS_ENABLED', 'FEISHU_PROGRESS_NOTICE');
   let enabled = true;
   if (cliEnabled !== '') {
     enabled = asBool(cliEnabled, true);
@@ -381,33 +648,33 @@ function resolveProgressConfig(config) {
   const message = String(
     cliMessage
       || progress.message
-      || process.env.FEISHU_PROGRESS_MESSAGE
+      || getAccountEnv(accountName, 'PROGRESS_MESSAGE', 'FEISHU_PROGRESS_MESSAGE')
       || '已接收，正在执行。'
   ).trim();
 
   const rawMode = String(
-    getArg('--progress-mode', process.env.FEISHU_PROGRESS_MODE || progress.mode || 'message')
+    getArg('--progress-mode', getAccountEnv(accountName, 'PROGRESS_MODE') || progress.mode || process.env.FEISHU_PROGRESS_MODE || 'doc')
   ).trim().toLowerCase();
-  const mode = VALID_PROGRESS_MODES.has(rawMode) ? rawMode : 'message';
+  const mode = VALID_PROGRESS_MODES.has(rawMode) ? rawMode : 'doc';
 
   const doc = progress.doc || {};
   const titlePrefix = String(
     getArg(
       '--progress-doc-title-prefix',
-      process.env.FEISHU_PROGRESS_DOC_TITLE_PREFIX || doc.title_prefix || 'Codex 任务进度'
+      getAccountEnv(accountName, 'PROGRESS_DOC_TITLE_PREFIX') || doc.title_prefix || process.env.FEISHU_PROGRESS_DOC_TITLE_PREFIX || 'AI 助手｜任务进度'
     )
-  ).trim() || 'Codex 任务进度';
+  ).trim() || 'AI 助手｜任务进度';
   const shareToChat = asBool(
     getArg(
       '--progress-doc-share-to-chat',
-      process.env.FEISHU_PROGRESS_DOC_SHARE_TO_CHAT || doc.share_to_chat
+      getAccountEnv(accountName, 'PROGRESS_DOC_SHARE_TO_CHAT') || doc.share_to_chat || process.env.FEISHU_PROGRESS_DOC_SHARE_TO_CHAT
     ),
     true
   );
   const shareLinkScopeRaw = String(
     getArg(
       '--progress-doc-link-scope',
-      process.env.FEISHU_PROGRESS_DOC_LINK_SCOPE || doc.link_scope || 'same_tenant'
+      getAccountEnv(accountName, 'PROGRESS_DOC_LINK_SCOPE') || doc.link_scope || process.env.FEISHU_PROGRESS_DOC_LINK_SCOPE || 'same_tenant'
     )
   ).trim().toLowerCase();
   const linkScope = VALID_PROGRESS_DOC_LINK_SCOPES.has(shareLinkScopeRaw)
@@ -416,14 +683,14 @@ function resolveProgressConfig(config) {
   const includeUserMessage = asBool(
     getArg(
       '--progress-doc-include-user-message',
-      process.env.FEISHU_PROGRESS_DOC_INCLUDE_USER_MESSAGE || doc.include_user_message
+      getAccountEnv(accountName, 'PROGRESS_DOC_INCLUDE_USER_MESSAGE') || doc.include_user_message || process.env.FEISHU_PROGRESS_DOC_INCLUDE_USER_MESSAGE
     ),
     true
   );
   const writeFinalReply = asBool(
     getArg(
       '--progress-doc-write-final-reply',
-      process.env.FEISHU_PROGRESS_DOC_WRITE_FINAL_REPLY || doc.write_final_reply
+      getAccountEnv(accountName, 'PROGRESS_DOC_WRITE_FINAL_REPLY') || doc.write_final_reply || process.env.FEISHU_PROGRESS_DOC_WRITE_FINAL_REPLY
     ),
     true
   );
@@ -441,25 +708,25 @@ function resolveProgressConfig(config) {
   };
 }
 
-function resolveTypingConfig(config) {
+function resolveTypingConfig(accountName, config) {
   const typing = config.typing_indicator || {};
   const enabled = asBool(
-    getArg('--typing-indicator', process.env.FEISHU_TYPING_INDICATOR || typing.enabled),
+    getArg('--typing-indicator', getAccountEnv(accountName, 'TYPING_INDICATOR') || typing.enabled || process.env.FEISHU_TYPING_INDICATOR),
     true
   );
   const emoji = String(
-    getArg('--typing-emoji', process.env.FEISHU_TYPING_EMOJI || typing.emoji || 'Typing')
+    getArg('--typing-emoji', getAccountEnv(accountName, 'TYPING_EMOJI') || typing.emoji || process.env.FEISHU_TYPING_EMOJI || 'Typing')
   ).trim() || 'Typing';
   return { enabled, emoji };
 }
 
-function resolveMentionConfig(config) {
+function resolveMentionConfig(accountName, config) {
   const cliRequireMention = getArg('--require-mention', '');
-  const envRequireMention = process.env.FEISHU_REQUIRE_MENTION;
+  const envRequireMention = getAccountEnv(accountName, 'REQUIRE_MENTION', 'FEISHU_REQUIRE_MENTION');
   const cfgRequireMention = config.require_mention;
 
   const cliGroupOnly = getArg('--require-mention-group-only', '');
-  const envGroupOnly = process.env.FEISHU_REQUIRE_MENTION_GROUP_ONLY;
+  const envGroupOnly = getAccountEnv(accountName, 'REQUIRE_MENTION_GROUP_ONLY', 'FEISHU_REQUIRE_MENTION_GROUP_ONLY');
   const cfgGroupOnly = config.require_mention_group_only;
 
   let requireMention = true;
@@ -486,27 +753,27 @@ function resolveMentionConfig(config) {
   };
 }
 
-function resolveFakeStreamConfig(config) {
+function resolveFakeStreamConfig(accountName, config) {
   const fake = config.fake_stream || {};
   return {
     enabled: asBool(
-      getArg('--fake-stream', process.env.FEISHU_FAKE_STREAM || fake.enabled),
+      getArg('--fake-stream', getAccountEnv(accountName, 'FAKE_STREAM') || fake.enabled || process.env.FEISHU_FAKE_STREAM),
       false
     ),
     intervalMs: asInt(
-      getArg('--fake-stream-interval-ms', process.env.FEISHU_FAKE_STREAM_INTERVAL_MS || fake.interval_ms),
+      getArg('--fake-stream-interval-ms', getAccountEnv(accountName, 'FAKE_STREAM_INTERVAL_MS') || fake.interval_ms || process.env.FEISHU_FAKE_STREAM_INTERVAL_MS),
       120,
       20,
       2000
     ),
     chunkChars: asInt(
-      getArg('--fake-stream-chunk-chars', process.env.FEISHU_FAKE_STREAM_CHUNK_CHARS || fake.chunk_chars),
+      getArg('--fake-stream-chunk-chars', getAccountEnv(accountName, 'FAKE_STREAM_CHUNK_CHARS') || fake.chunk_chars || process.env.FEISHU_FAKE_STREAM_CHUNK_CHARS),
       1,
       1,
       128
     ),
     maxUpdates: asInt(
-      getArg('--fake-stream-max-updates', process.env.FEISHU_FAKE_STREAM_MAX_UPDATES || fake.max_updates),
+      getArg('--fake-stream-max-updates', getAccountEnv(accountName, 'FAKE_STREAM_MAX_UPDATES') || fake.max_updates || process.env.FEISHU_FAKE_STREAM_MAX_UPDATES),
       120,
       1,
       4000
@@ -514,26 +781,27 @@ function resolveFakeStreamConfig(config) {
   };
 }
 
-function resolveCodexConfig(config) {
+function resolveCodexConfig(accountName, config) {
   const codexConfig = config.codex || {};
   const apiKey = pickValue([
     ['cli', getArg('--codex-api-key', '')],
+    ['env_account', getAccountEnv(accountName, 'CODEX_API_KEY', 'FEISHU_CODEX_API_KEY')],
+    ['config', codexConfig.api_key || ''],
     ['env', process.env.CODEX_API_KEY || ''],
     ['env_openai', process.env.OPENAI_API_KEY || ''],
-    ['config', codexConfig.api_key || ''],
   ]);
   const baseURL = String(
     getArg(
       '--codex-base-url',
-      process.env.FEISHU_CODEX_BASE_URL
+      getAccountEnv(accountName, 'CODEX_BASE_URL', 'FEISHU_CODEX_BASE_URL')
+        || codexConfig.base_url
         || process.env.OPENAI_BASE_URL
         || process.env.OPENAI_API_BASE
-        || codexConfig.base_url
         || ''
     )
   ).trim().replace(/\/+$/, '');
   const sandbox = String(
-    getArg('--codex-sandbox', process.env.FEISHU_CODEX_SANDBOX || codexConfig.sandbox || 'danger-full-access')
+    getArg('--codex-sandbox', getAccountEnv(accountName, 'CODEX_SANDBOX') || codexConfig.sandbox || process.env.FEISHU_CODEX_SANDBOX || 'danger-full-access')
   ).trim();
   ensure(
     VALID_CODEX_SANDBOXES.has(sandbox),
@@ -542,34 +810,36 @@ function resolveCodexConfig(config) {
   const approvalPolicy = String(
     getArg(
       '--codex-approval-policy',
-      process.env.FEISHU_CODEX_APPROVAL_POLICY || codexConfig.approval_policy || 'never'
+      getAccountEnv(accountName, 'CODEX_APPROVAL_POLICY') || codexConfig.approval_policy || process.env.FEISHU_CODEX_APPROVAL_POLICY || 'never'
     )
   ).trim();
   ensure(
     VALID_CODEX_APPROVAL_POLICIES.has(approvalPolicy),
     `invalid codex approval_policy "${approvalPolicy}", expected ${Array.from(VALID_CODEX_APPROVAL_POLICIES).join(' | ')}`
   );
-  const cwd = resolveOptionalDir(getArg('--codex-cd', process.env.FEISHU_CODEX_CD || codexConfig.cwd || ''));
+  const cwd = resolveOptionalDir(
+    getArg('--codex-cd', getAccountEnv(accountName, 'CODEX_CWD', accountEnvKey(accountName, 'CODEX_CD'), 'FEISHU_CODEX_CWD', 'FEISHU_CODEX_CD') || codexConfig.cwd || '')
+  );
   const addDirs = resolveOptionalDirList(
-    getArg('--codex-add-dirs', process.env.FEISHU_CODEX_ADD_DIRS || codexConfig.add_dirs || codexConfig.addDirs || '')
+    getArg('--codex-add-dirs', getAccountEnv(accountName, 'CODEX_ADD_DIRS') || codexConfig.add_dirs || codexConfig.addDirs || process.env.FEISHU_CODEX_ADD_DIRS || '')
   ).filter((dir) => dir !== cwd);
 
   return {
-    bin: String(getArg('--codex-bin', process.env.FEISHU_CODEX_BIN || codexConfig.bin || 'codex')).trim() || 'codex',
-    model: String(getArg('--codex-model', process.env.FEISHU_CODEX_MODEL || codexConfig.model || '')).trim(),
+    bin: String(getArg('--codex-bin', getAccountEnv(accountName, 'CODEX_BIN', 'CODEX_BIN', 'FEISHU_CODEX_BIN') || codexConfig.bin || 'codex')).trim() || 'codex',
+    model: String(getArg('--codex-model', getAccountEnv(accountName, 'CODEX_MODEL') || codexConfig.model || process.env.FEISHU_CODEX_MODEL || '')).trim(),
     reasoningEffort: String(
       getArg(
         '--codex-reasoning-effort',
-        process.env.FEISHU_CODEX_REASONING_EFFORT || codexConfig.reasoning_effort || ''
+        getAccountEnv(accountName, 'CODEX_REASONING_EFFORT') || codexConfig.reasoning_effort || process.env.FEISHU_CODEX_REASONING_EFFORT || ''
       )
     ).trim(),
-    profile: String(getArg('--codex-profile', process.env.FEISHU_CODEX_PROFILE || codexConfig.profile || '')).trim(),
+    profile: String(getArg('--codex-profile', getAccountEnv(accountName, 'CODEX_PROFILE') || codexConfig.profile || process.env.FEISHU_CODEX_PROFILE || '')).trim(),
     cwd,
     addDirs,
     // Intentionally disable execution timeout: wait until the task exits naturally.
     timeoutSec: 0,
-    historyTurns: asInt(getArg('--history-turns', process.env.FEISHU_HISTORY_TURNS || codexConfig.history_turns), 6, 0, 20),
-    systemPrompt: String(getArg('--system-prompt', process.env.FEISHU_CODEX_SYSTEM_PROMPT || codexConfig.system_prompt || DEFAULT_CODEX_SYSTEM_PROMPT)).trim(),
+    historyTurns: asInt(getArg('--history-turns', getAccountEnv(accountName, 'HISTORY_TURNS') || codexConfig.history_turns || process.env.FEISHU_HISTORY_TURNS), 6, 0, 20),
+    systemPrompt: String(getArg('--system-prompt', getAccountEnv(accountName, 'CODEX_SYSTEM_PROMPT') || codexConfig.system_prompt || process.env.FEISHU_CODEX_SYSTEM_PROMPT || DEFAULT_CODEX_SYSTEM_PROMPT)).trim(),
     apiKey: apiKey.value,
     apiKeySource: apiKey.source,
     baseURL,
@@ -591,12 +861,12 @@ function detectBinary(bin, versionArgs = ['-version']) {
   }
 }
 
-function resolveFfmpegConfig(config) {
+function resolveFfmpegConfig(accountName, config) {
   const speechConfig = config.speech || {};
   const candidates = uniqueStrings([
     getArg('--speech-ffmpeg-bin', ''),
-    process.env.FEISHU_SPEECH_FFMPEG_BIN || '',
     speechConfig.ffmpeg_bin || '',
+    getAccountEnv(accountName, 'SPEECH_FFMPEG_BIN', 'FEISHU_SPEECH_FFMPEG_BIN') || '',
     ffmpegStatic || '',
     'ffmpeg',
   ]);
@@ -617,40 +887,40 @@ function resolveFfmpegConfig(config) {
   };
 }
 
-function resolveSpeechConfig(config, codex = {}) {
+function resolveSpeechConfig(accountName, config, codex = {}) {
   const speechConfig = config.speech || {};
   const apiKey = pickValue([
     ['cli', getArg('--speech-api-key', '')],
-    ['env', process.env.FEISHU_SPEECH_API_KEY || ''],
+    ['env_account', getAccountEnv(accountName, 'SPEECH_API_KEY', 'FEISHU_SPEECH_API_KEY')],
     ['config', speechConfig.api_key || ''],
     ['env_openai', process.env.OPENAI_API_KEY || ''],
     ['env_codex', process.env.CODEX_API_KEY || ''],
     [codex.apiKeySource || 'codex', codex.apiKey || ''],
   ]);
-  const ffmpeg = resolveFfmpegConfig(config);
+  const ffmpeg = resolveFfmpegConfig(accountName, config);
   const baseURL = String(
     getArg(
       '--speech-base-url',
-      process.env.FEISHU_SPEECH_BASE_URL
+      getAccountEnv(accountName, 'SPEECH_BASE_URL', 'FEISHU_SPEECH_BASE_URL')
+        || speechConfig.base_url
         || process.env.OPENAI_BASE_URL
         || process.env.OPENAI_API_BASE
-        || speechConfig.base_url
         || 'https://api.openai.com/v1'
     )
   ).trim().replace(/\/+$/, '') || 'https://api.openai.com/v1';
 
   return {
-    enabled: asBool(getArg('--speech-enabled', process.env.FEISHU_SPEECH_ENABLED || speechConfig.enabled), true),
+    enabled: asBool(getArg('--speech-enabled', getAccountEnv(accountName, 'SPEECH_ENABLED') || speechConfig.enabled || process.env.FEISHU_SPEECH_ENABLED), true),
     model: String(
       getArg(
         '--speech-model',
-        process.env.FEISHU_SPEECH_MODEL || speechConfig.model || 'gpt-4o-mini-transcribe'
+        getAccountEnv(accountName, 'SPEECH_MODEL') || speechConfig.model || process.env.FEISHU_SPEECH_MODEL || 'gpt-4o-mini-transcribe'
       )
     ).trim() || 'gpt-4o-mini-transcribe',
     language: String(
       getArg(
         '--speech-language',
-        process.env.FEISHU_SPEECH_LANGUAGE || speechConfig.language || ''
+        getAccountEnv(accountName, 'SPEECH_LANGUAGE') || speechConfig.language || process.env.FEISHU_SPEECH_LANGUAGE || ''
       )
     ).trim(),
     apiKey: apiKey.value,
@@ -2226,6 +2496,37 @@ function parseMemoryCommand(text) {
   return { type: 'help' };
 }
 
+function parseSyncCommand(text) {
+  const raw = normalizeCommandText(text);
+  if (!raw) return null;
+
+  if (/^\/syncs$/i.test(raw)) return { type: 'list' };
+  if (!/^\/sync(?:\s|$)/i.test(raw)) return null;
+
+  if (/^\/sync(?:\s+help)?$/i.test(raw)) return { type: 'help' };
+  if (/^\/sync\s+status$/i.test(raw)) return { type: 'status' };
+  if (/^\/sync\s+(?:list|list-remote)$/i.test(raw)) return { type: 'list' };
+  if (/^\/sync\s+push$/i.test(raw)) return { type: 'push' };
+
+  const pullMatch = raw.match(/^\/sync\s+pull(?:\s+(.+))?$/i);
+  if (pullMatch) {
+    return {
+      type: 'pull',
+      snapshot: String(pullMatch[1] || 'latest').trim() || 'latest',
+    };
+  }
+
+  const restoreMatch = raw.match(/^\/sync\s+restore(?:\s+(.+))?$/i);
+  if (restoreMatch) {
+    return {
+      type: 'restore',
+      snapshot: String(restoreMatch[1] || 'latest').trim() || 'latest',
+    };
+  }
+
+  return { type: 'help' };
+}
+
 function formatTimerHelp() {
   return [
     '定时任务命令：',
@@ -2240,7 +2541,8 @@ function formatTimerHelp() {
     '/timer delete <任务ID>',
     '',
     '复杂创建或修改也可以直接发自然语言，例如：',
-    '/timer 创建一个每天 09:00 执行的日报任务，目录 /workspace，结果发回当前会话',
+    '/timer 把 daily-report 改成每天 10:30 执行，并把任务内容改成检查当前工作目录后发回当前会话',
+    '/timer 创建一个每天 09:00 执行的日报任务，目录 workspace/assistant，结果发回当前会话',
   ].join('\n');
 }
 
@@ -2257,6 +2559,25 @@ function formatMemoryHelp() {
     '示例：',
     '/memory 以后默认用简体中文回复',
     '/memory search 中文',
+    '',
+    '说明：当前机器人账号会使用自己的独立记忆库。',
+  ].join('\n');
+}
+
+function formatSyncHelp() {
+  return [
+    '同步命令：',
+    '/sync help',
+    '/sync status',
+    '/sync list',
+    '/sync push',
+    '/sync pull [latest|快照ID]',
+    '/sync restore [latest|快照ID]',
+    '',
+    '说明：',
+    '/sync 默认操作当前机器人账号的同步配置。',
+    '/sync pull 会把远端文档拉到本地恢复目录，不直接覆盖工作区。',
+    '/sync restore 默认只补缺失文档；显式覆盖时才会使用 force 模式。',
   ].join('\n');
 }
 
@@ -2319,25 +2640,48 @@ function runMemoryAdminCommand(args = [], { timeoutMs = 30000 } = {}) {
   return compactText(combined || 'ok', 4000);
 }
 
-function handleTimerCommand(command) {
+function runSyncAdminCommand(args = [], { timeoutMs = 60000 } = {}) {
+  const repoRoot = path.resolve(__dirname, '..');
+  const cmdArgs = ['sync', ...args, '--repo', repoRoot];
+  const result = spawnSync(resolveDaemonBin(), cmdArgs, {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    env: process.env,
+  });
+  if (result.error) {
+    throw new Error(`sync command failed: ${result.error.message}`);
+  }
+  const combined = [String(result.stdout || ''), String(result.stderr || '')]
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+  if (result.status !== 0) {
+    throw new Error(compactText(combined || `exit=${result.status}`, 1200));
+  }
+  return compactText(combined || 'ok', 4000);
+}
+
+function handleTimerCommand(command, { accountName = '' } = {}) {
   if (!command) return { handled: false, reply: '' };
+  const account = String(accountName || 'assistant').trim() || 'assistant';
   if (command.type === 'help') {
     return { handled: true, reply: formatTimerHelp() };
   }
   if (command.type === 'list') {
-    return { handled: true, reply: runTimerAdminCommand(['list']) };
+    return { handled: true, reply: runTimerAdminCommand(['list', '--account', account]) };
   }
   const target = String(command.target || '').trim();
   if (!target) {
     return { handled: true, reply: '缺少任务 ID。请用 /timer help 查看命令格式。' };
   }
   const argsByType = {
-    show: ['show', target],
-    run: ['run', target],
-    logs: ['logs', target],
-    enable: ['enable', target],
-    disable: ['disable', target],
-    delete: ['delete', target],
+    show: ['show', '--account', account, target],
+    run: ['run', '--account', account, target],
+    logs: ['logs', '--account', account, target],
+    enable: ['enable', '--account', account, target],
+    disable: ['disable', '--account', account, target],
+    delete: ['delete', '--account', account, target],
   };
   const args = argsByType[command.type];
   if (!args) return { handled: false, reply: '' };
@@ -2353,14 +2697,14 @@ function handleMemoryCommand(command, { accountName = '', chatID = '' } = {}) {
     return { handled: true, reply: formatMemoryHelp() };
   }
   if (command.type === 'list') {
-    return { handled: true, reply: runMemoryAdminCommand(['list']) };
+    return { handled: true, reply: runMemoryAdminCommand(['list', '--account', accountName || 'assistant']) };
   }
   if (command.type === 'search') {
     const query = String(command.query || '').trim();
     if (!query) {
       return { handled: true, reply: '缺少搜索关键词。请用 /memory help 查看命令格式。' };
     }
-    return { handled: true, reply: runMemoryAdminCommand(['search', query]) };
+    return { handled: true, reply: runMemoryAdminCommand(['search', '--account', accountName || 'assistant', query]) };
   }
   if (command.type === 'add') {
     const text = String(command.text || '').trim();
@@ -2372,7 +2716,7 @@ function handleMemoryCommand(command, { accountName = '', chatID = '' } = {}) {
     if (String(chatID || '').trim()) sourceParts.push(String(chatID || '').trim());
     return {
       handled: true,
-      reply: runMemoryAdminCommand(['add', '--text', text, '--source', sourceParts.join('/')]),
+      reply: runMemoryAdminCommand(['add', '--account', accountName || 'assistant', '--text', text, '--source', sourceParts.join('/')]),
     };
   }
   const target = String(command.target || '').trim();
@@ -2380,8 +2724,8 @@ function handleMemoryCommand(command, { accountName = '', chatID = '' } = {}) {
     return { handled: true, reply: '缺少记忆 ID。请用 /memory help 查看命令格式。' };
   }
   const argsByType = {
-    show: ['show', target],
-    delete: ['delete', target],
+    show: ['show', '--account', accountName || 'assistant', target],
+    delete: ['delete', '--account', accountName || 'assistant', target],
   };
   const args = argsByType[command.type];
   if (!args) return { handled: false, reply: '' };
@@ -2389,6 +2733,34 @@ function handleMemoryCommand(command, { accountName = '', chatID = '' } = {}) {
     handled: true,
     reply: runMemoryAdminCommand(args),
   };
+}
+
+function handleSyncCommand(command, { accountName = '' } = {}) {
+  if (!command) return { handled: false, reply: '' };
+  const account = String(accountName || 'assistant').trim() || 'assistant';
+  if (command.type === 'help') {
+    return { handled: true, reply: formatSyncHelp() };
+  }
+  if (command.type === 'status') {
+    return { handled: true, reply: runSyncAdminCommand(['status', '--account', account]) };
+  }
+  if (command.type === 'list') {
+    return { handled: true, reply: runSyncAdminCommand(['list-remote', '--account', account]) };
+  }
+  if (command.type === 'push') {
+    return { handled: true, reply: runSyncAdminCommand(['push', '--account', account]) };
+  }
+  if (command.type === 'pull') {
+    const snapshot = String(command.snapshot || 'latest').trim() || 'latest';
+    const safeSnapshot = snapshot.replace(/[\\/:\s]+/g, '-');
+    const targetDir = path.join('.runtime', 'sync', 'restore', safeSnapshot);
+    return { handled: true, reply: runSyncAdminCommand(['pull', '--account', account, '--snapshot', snapshot, '--to', targetDir]) };
+  }
+  if (command.type === 'restore') {
+    const snapshot = String(command.snapshot || 'latest').trim() || 'latest';
+    return { handled: true, reply: runSyncAdminCommand(['restore', '--account', account, '--snapshot', snapshot, '--force']) };
+  }
+  return { handled: false, reply: '' };
 }
 
 function makeThread(threadId, name = '') {
@@ -2907,18 +3279,33 @@ async function generateCodexReply({
   sessionId = '',
   threadTitle = '',
   accountName = '',
+  configPath = '',
+  config = {},
   chatID = '',
   onSpawn = null,
   onProgressEvent = null,
 }) {
   let resolvedSessionId = String(sessionId || '').trim();
   const imageCount = Array.isArray(imagePaths) ? imagePaths.length : 0;
-  const runtimeWorkspace = ensureRuntimeWorkspace(codex.cwd);
+  const runtimeWorkspace = ensureRuntimeWorkspace(codex.cwd, { accountName, configPath, config });
+  if (runtimeWorkspace.configWritten && runtimeWorkspace.configPath) {
+    console.log(`runtime_config_toml=${runtimeWorkspace.configPath}`);
+  }
   if (runtimeWorkspace.gitInitialized) {
     console.log(`runtime_git_initialized=${codex.cwd}`);
   }
+  if (runtimeWorkspace.restoreAttempted) {
+    if (runtimeWorkspace.restoreSucceeded) {
+      console.log(`runtime_sync_restore=ok account=${accountName || 'assistant'} docs=${runtimeWorkspace.restoredDocs.join(' | ') || '(none)'} message=${runtimeWorkspace.restoreOutput || 'ok'}`);
+    } else {
+      console.log(`runtime_sync_restore=skip account=${accountName || 'assistant'} message=${runtimeWorkspace.restoreOutput || 'not_restored'}`);
+    }
+  }
   if (runtimeWorkspace.createdDocs.length > 0) {
     console.log(`runtime_docs_initialized=${runtimeWorkspace.createdDocs.join(' | ')}`);
+  }
+  if (runtimeWorkspace.defaultSyncTaskCreated && runtimeWorkspace.defaultSyncTaskPath) {
+    console.log(`runtime_default_timer_created=${runtimeWorkspace.defaultSyncTaskID} path=${runtimeWorkspace.defaultSyncTaskPath}`);
   }
   const runExec = async ({ prompt, resumeSessionId = '' }) => {
     return runCodexExec({
@@ -3299,6 +3686,8 @@ async function runTimerTaskMode({
   accountName,
   taskFile,
   codex,
+  configPath = '',
+  config = {},
 }) {
   const loaded = readJsonRequired(taskFile);
   const task = normalizeTimerTask(loaded.value, loaded.path);
@@ -3326,6 +3715,8 @@ async function runTimerTaskMode({
       sessionId: '',
       threadTitle,
       accountName,
+      configPath,
+      config,
       chatID: task.chatID,
     });
     const codexRawReply = String(codexReply.reply || '').replace(/\r/g, '');
@@ -3815,7 +4206,7 @@ function createDocProgressReporter({
     try {
       const created = await client.docx.document.create({
         data: {
-          title: `${progressDoc.titlePrefix || 'Codex 任务进度'} ${formatProgressTimestamp(startedAt)}`,
+          title: `${progressDoc.titlePrefix || 'AI 助手｜任务进度'} ${formatProgressTimestamp(startedAt)}`,
         },
       });
       documentID = String(created?.data?.document?.document_id || '').trim();
@@ -4359,29 +4750,30 @@ function dispatchLatestByChat(chatRunners, taskKey, data, handler, options = {})
 async function main() {
   ensure(lark, 'missing dependency @larksuiteoapi/node-sdk; run: npm install');
 
-  const account = (getArg('--account', '') || process.env.FEISHU_ACCOUNT || 'default').trim();
-  const configDir = path.resolve(getArg('--config-dir', path.resolve(__dirname, '..', 'config', 'feishu')));
+  const account = String(getArg('--account', '') || '').trim();
+  ensure(account, 'missing required --account <account>');
+  const configDir = path.resolve(getArg('--config-dir', path.resolve(__dirname, '..', 'config')));
   const { accountName, config, configPath } = loadFeishuConfig(account, configDir);
 
   const dryRunValue = getArg('--dry-run', '');
   const dryRun = process.argv.includes('--dry-run') || asBool(dryRunValue, false);
   const timerTaskFile = String(getArg('--timer-task-file', '')).trim();
 
-  const domainInput = (getArg('--domain', '') || process.env.FEISHU_DOMAIN || config.domain || 'feishu').trim();
+  const domainInput = (getArg('--domain', '') || getAccountEnv(accountName, 'DOMAIN') || config.domain || process.env.FEISHU_DOMAIN || 'feishu').trim();
   const domain = resolveDomain(domainInput);
-  const autoReply = asBool(getArg('--auto-reply', process.env.FEISHU_AUTO_REPLY || config.auto_reply), true);
-  const ignoreSelf = asBool(getArg('--ignore-self', process.env.FEISHU_IGNORE_SELF_MESSAGES || config.ignore_self_messages), true);
-  const botName = String(getArg('--bot-name', process.env.FEISHU_BOT_NAME || config.bot_name || '')).trim();
-  const replyPrefix = getArg('--reply-prefix', process.env.FEISHU_REPLY_PREFIX || config.reply_prefix || '');
-  const replyMode = resolveReplyMode(config);
-  const progress = resolveProgressConfig(config);
-  const typing = resolveTypingConfig(config);
-  const mentionConfig = resolveMentionConfig(config);
-  const fakeStream = resolveFakeStreamConfig(config);
+  const autoReply = asBool(getArg('--auto-reply', getAccountEnv(accountName, 'AUTO_REPLY') || config.auto_reply || process.env.FEISHU_AUTO_REPLY), true);
+  const ignoreSelf = asBool(getArg('--ignore-self', getAccountEnv(accountName, 'IGNORE_SELF_MESSAGES') || config.ignore_self_messages || process.env.FEISHU_IGNORE_SELF_MESSAGES), true);
+  const botName = String(getArg('--bot-name', getAccountEnv(accountName, 'BOT_NAME') || config.bot_name || process.env.FEISHU_BOT_NAME || '')).trim();
+  const replyPrefix = getArg('--reply-prefix', getAccountEnv(accountName, 'REPLY_PREFIX') || config.reply_prefix || process.env.FEISHU_REPLY_PREFIX || '');
+  const replyMode = resolveReplyMode(accountName, config);
+  const progress = resolveProgressConfig(accountName, config);
+  const typing = resolveTypingConfig(accountName, config);
+  const mentionConfig = resolveMentionConfig(accountName, config);
+  const fakeStream = resolveFakeStreamConfig(accountName, config);
 
-  const creds = resolveCredentials(config);
-  const codex = resolveCodexConfig(config);
-  const speech = resolveSpeechConfig(config, codex);
+  const creds = resolveCredentials(accountName, config);
+  const codex = resolveCodexConfig(accountName, config);
+  const speech = resolveSpeechConfig(accountName, config, codex);
   const codexDetect = detectCodex(codex.bin);
   const mentionAliases = resolveMentionAliases({
     botName,
@@ -4462,6 +4854,26 @@ async function main() {
   if (replyMode === 'codex' || timerTaskFile) {
     ensure(codexDetect.found, `codex binary not found: ${codex.bin}`);
   }
+  const startupWorkspace = ensureRuntimeWorkspace(codex.cwd, { accountName, configPath, config });
+  if (startupWorkspace.configWritten && startupWorkspace.configPath) {
+    console.log(`runtime_config_toml=${startupWorkspace.configPath}`);
+  }
+  if (startupWorkspace.gitInitialized) {
+    console.log(`runtime_git_initialized=${codex.cwd}`);
+  }
+  if (startupWorkspace.restoreAttempted) {
+    if (startupWorkspace.restoreSucceeded) {
+      console.log(`runtime_sync_restore=ok account=${accountName || 'assistant'} docs=${startupWorkspace.restoredDocs.join(' | ') || '(none)'} message=${startupWorkspace.restoreOutput || 'ok'}`);
+    } else {
+      console.log(`runtime_sync_restore=skip account=${accountName || 'assistant'} message=${startupWorkspace.restoreOutput || 'not_restored'}`);
+    }
+  }
+  if (startupWorkspace.createdDocs.length > 0) {
+    console.log(`runtime_docs_initialized=${startupWorkspace.createdDocs.join(' | ')}`);
+  }
+  if (startupWorkspace.defaultSyncTaskCreated && startupWorkspace.defaultSyncTaskPath) {
+    console.log(`runtime_default_timer_created=${startupWorkspace.defaultSyncTaskID} path=${startupWorkspace.defaultSyncTaskPath}`);
+  }
 
   const baseConfig = {
     appId: creds.appId.value,
@@ -4476,6 +4888,8 @@ async function main() {
       accountName,
       taskFile: timerTaskFile,
       codex,
+      configPath,
+      config,
     });
     return;
   }
@@ -4719,6 +5133,22 @@ async function main() {
 
     const chatState = ensureChatState(chatStates, conversationScope.stateKey || chatID);
     if (messageType === 'text') {
+      const syncCommand = parseSyncCommand(userText);
+      if (syncCommand) {
+        try {
+          const result = handleSyncCommand(syncCommand, { accountName });
+          if (result.handled) {
+            await sendTextReplySafe(client, chatID, result.reply, 'sync_reply');
+            console.log(`reply=ok mode=sync_command type=${syncCommand.type}`);
+            return;
+          }
+        } catch (err) {
+          await sendTextReplySafe(client, chatID, `同步命令执行失败：${err.message}`, 'sync_reply');
+          console.error(`reply=error mode=sync_command type=${syncCommand.type} message=${err.message}`);
+          return;
+        }
+      }
+
       const memoryCommand = parseMemoryCommand(userText);
       if (memoryCommand) {
         try {
@@ -4738,7 +5168,7 @@ async function main() {
       const timerCommand = parseTimerCommand(userText);
       if (timerCommand) {
         try {
-          const result = handleTimerCommand(timerCommand);
+          const result = handleTimerCommand(timerCommand, { accountName });
           if (result.handled) {
             await sendTextReplySafe(client, chatID, result.reply, 'timer_reply');
             console.log(`reply=ok mode=timer_command type=${timerCommand.type}`);
@@ -4836,6 +5266,8 @@ async function main() {
           sessionId: currentThread.codexThreadId,
           threadTitle: codexThreadTitle,
           accountName,
+          configPath,
+          config,
           chatID,
           onSpawn: (child) => {
             taskControl.attachCodexChild(child);

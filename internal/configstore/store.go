@@ -1,76 +1,247 @@
 package configstore
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 )
 
 type Store struct {
 	RepoRoot  string
-	ConfigDir string // config/feishu
+	ConfigDir string // config
 }
 
 func NewStore(repoRoot string) *Store {
 	return &Store{
 		RepoRoot:  repoRoot,
-		ConfigDir: filepath.Join(repoRoot, "config", "feishu"),
+		ConfigDir: filepath.Join(repoRoot, "config"),
 	}
 }
 
-func (s *Store) AccountJSONPath(account string) string {
-	return filepath.Join(s.ConfigDir, account+".json")
+func (s *Store) OverlayTOMLPath() string {
+	return filepath.Join(s.ConfigDir, "feishu", "bots.toml")
+}
+
+func (s *Store) LocalTOMLPath() string {
+	return filepath.Join(s.ConfigDir, "secrets", "local.toml")
+}
+
+func (s *Store) OverlayTargetLabel(account string) string {
+	if strings.TrimSpace(account) == "" || strings.TrimSpace(account) == "default" {
+		return s.OverlayTOMLPath() + " [shared]"
+	}
+	return s.OverlayTOMLPath() + " [bot." + account + "]"
+}
+
+func ResolveRuntimeAccountFromDir(dir, scope string) (string, string, error) {
+	current := strings.TrimSpace(dir)
+	if current == "" {
+		return "", "", nil
+	}
+	if !filepath.IsAbs(current) {
+		abs, err := filepath.Abs(current)
+		if err != nil {
+			return "", "", err
+		}
+		current = abs
+	}
+	scope = strings.TrimSpace(scope)
+	for {
+		cfgPath := filepath.Join(current, ".config.toml")
+		if _, err := os.Stat(cfgPath); err == nil {
+			doc, err := parseTOMLFile(cfgPath)
+			if err != nil {
+				return "", cfgPath, err
+			}
+			if runtimeMap, ok := getMapAt(doc.root, []string{"runtime"}); ok && scope != "" {
+				key := scope + "_account"
+				if value := strings.TrimSpace(getNestedRuntimeConfigString(runtimeMap, key)); value != "" {
+					return value, cfgPath, nil
+				}
+			}
+			if botMap, ok := getMapAt(doc.root, []string{"bot"}); ok {
+				if value := strings.TrimSpace(getNestedRuntimeConfigString(botMap, "account")); value != "" {
+					return value, cfgPath, nil
+				}
+			}
+			return "", cfgPath, nil
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", cfgPath, err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+	return "", "", nil
+}
+
+func getNestedRuntimeConfigString(root *OMap, key string) string {
+	if root == nil {
+		return ""
+	}
+	value, ok := root.Get(key)
+	if !ok {
+		return ""
+	}
+	switch v := value.(type) {
+	case string:
+		return v
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	case int:
+		return strconv.Itoa(v)
+	default:
+		return ""
+	}
+}
+
+func (s *Store) ReadOverlayDoc() (*tomlDoc, string, error) {
+	p := s.OverlayTOMLPath()
+	if _, err := os.Stat(p); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return &tomlDoc{root: NewOMap()}, p, nil
+		}
+		return nil, "", err
+	}
+	doc, err := parseTOMLFile(p)
+	return doc, p, err
+}
+
+func (s *Store) WriteOverlayDoc(doc *tomlDoc, path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(doc.stringify()), 0o644)
 }
 
 func (s *Store) ReadOverlay(account string) (map[string]any, error) {
-	p := s.AccountJSONPath(account)
-	b, err := os.ReadFile(p)
+	doc, _, err := s.ReadOverlayDoc()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return map[string]any{}, nil
+		return nil, err
+	}
+	shared := map[string]any{}
+	if m, ok := getMapAt(doc.root, []string{"shared"}); ok {
+		shared = toPlainMap(m)
+	}
+	accountMap := map[string]any{}
+	if strings.TrimSpace(account) != "" && strings.TrimSpace(account) != "default" {
+		if m, ok := getMapAt(doc.root, []string{"bot", account}); ok {
+			accountMap = toPlainMap(m)
 		}
+	}
+	return applyDerivedBotConfig(account, DeepMerge(shared, accountMap)), nil
+}
+
+func (s *Store) WriteOverlay(account string, patch map[string]any) error {
+	doc, path, err := s.ReadOverlayDoc()
+	if err != nil {
+		return err
+	}
+	target := []string{"shared"}
+	if strings.TrimSpace(account) != "" && strings.TrimSpace(account) != "default" {
+		target = []string{"bot", account}
+	}
+	entry := ensureMapPath(doc.root, target)
+	deepMergeInto(entry, patch)
+	return s.WriteOverlayDoc(doc, path)
+}
+
+func (s *Store) ListOverlayAccountNames() ([]string, error) {
+	names := map[string]bool{}
+	doc, _, err := s.ReadOverlayDoc()
+	if err != nil {
 		return nil, err
 	}
-	var out map[string]any
-	if err := json.Unmarshal(b, &out); err != nil {
+	if m, ok := getMapAt(doc.root, []string{"bot"}); ok {
+		for _, k := range m.Keys() {
+			names[k] = true
+		}
+	}
+	out := []string{}
+	for k := range names {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func (s *Store) ListConfiguredAccountNames() ([]string, error) {
+	names := map[string]bool{}
+	overlayNames, err := s.ListOverlayAccountNames()
+	if err != nil {
 		return nil, err
 	}
-	if out == nil {
-		out = map[string]any{}
+	for _, name := range overlayNames {
+		names[name] = true
+	}
+	secretNames, err := s.ListSecretsEntryNames("feishu")
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range secretNames {
+		if name == "default" || strings.HasSuffix(name, ".example") {
+			continue
+		}
+		names[name] = true
+	}
+	out := make([]string, 0, len(names))
+	for name := range names {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func (s *Store) ListEnabledAccountNames() ([]string, error) {
+	names, err := s.ListConfiguredAccountNames()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		enabled, err := s.BotEnabled(name)
+		if err != nil {
+			return nil, err
+		}
+		if enabled {
+			out = append(out, name)
+		}
 	}
 	return out, nil
 }
 
-func (s *Store) WriteOverlay(account string, patch map[string]any) error {
-	cur, err := s.ReadOverlay(account)
+func (s *Store) BotEnabled(account string) (bool, error) {
+	cfg, err := s.ReadOverlay(account)
 	if err != nil {
-		return err
+		return false, err
 	}
-	next := DeepMerge(cur, patch)
-	b, err := json.MarshalIndent(next, "", "  ")
-	if err != nil {
-		return err
+	value, ok := getNestedValueMap(cfg, "enabled")
+	if !ok {
+		return true, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(s.AccountJSONPath(account)), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(s.AccountJSONPath(account), append(b, '\n'), 0o644)
+	return asBool(value, true), nil
 }
 
-func (s *Store) ReadSecretsDoc() (*yamlDoc, string, error) {
-	p := resolveSecretsFile(s.RepoRoot)
-	if _, err := os.Stat(p); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return &yamlDoc{root: NewOMap()}, p, nil
-		}
+func (s *Store) ReadSecretsDoc() (*tomlDoc, string, error) {
+	p := s.LocalTOMLPath()
+	if _, err := os.Stat(p); err == nil {
+		doc, err := parseTOMLFile(p)
+		return doc, p, err
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, "", err
 	}
-	doc, err := parseYAMLFile(p)
-	return doc, p, err
+	return &tomlDoc{root: NewOMap()}, p, nil
 }
 
-func (s *Store) WriteSecretsDoc(doc *yamlDoc, path string) error {
+func (s *Store) WriteSecretsDoc(doc *tomlDoc, path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -83,15 +254,13 @@ func (s *Store) ReadSecretsEntry(section, account string) (map[string]any, error
 		return nil, err
 	}
 
-	// config.<section>.<account> is preferred
-	if cfg, ok := getMapAt(doc.root, []string{"config", section, account}); ok {
-		return toPlainMap(cfg), nil
+	readFrom := func(root *OMap) map[string]any {
+		if cfg, ok := getMapAt(root, []string{section, account}); ok {
+			return toPlainMap(cfg)
+		}
+		return map[string]any{}
 	}
-	// legacy: values.<section>.<account>
-	if legacy, ok := getMapAt(doc.root, []string{"values", section, account}); ok {
-		return toPlainMap(legacy), nil
-	}
-	return map[string]any{}, nil
+	return readFrom(doc.root), nil
 }
 
 func (s *Store) UpsertSecretsEntry(section, account string, patch map[string]any) (string, error) {
@@ -99,7 +268,7 @@ func (s *Store) UpsertSecretsEntry(section, account string, patch map[string]any
 	if err != nil {
 		return "", err
 	}
-	entry := ensureMapPath(doc.root, []string{"config", section, account})
+	entry := ensureMapPath(doc.root, []string{section, account})
 	deepMergeInto(entry, patch)
 	if err := s.WriteSecretsDoc(doc, path); err != nil {
 		return "", err
@@ -113,12 +282,7 @@ func (s *Store) ListSecretsEntryNames(section string) ([]string, error) {
 		return nil, err
 	}
 	names := map[string]bool{}
-	if m, ok := getMapAt(doc.root, []string{"config", section}); ok {
-		for _, k := range m.Keys() {
-			names[k] = true
-		}
-	}
-	if m, ok := getMapAt(doc.root, []string{"values", section}); ok {
+	if m, ok := getMapAt(doc.root, []string{section}); ok {
 		for _, k := range m.Keys() {
 			names[k] = true
 		}
@@ -224,4 +388,73 @@ func DeepMerge(items ...map[string]any) map[string]any {
 		}
 	}
 	return out
+}
+
+func applyDerivedBotConfig(account string, cfg map[string]any) map[string]any {
+	out := DeepMerge(cfg)
+	account = strings.TrimSpace(account)
+	if account == "" || account == "default" {
+		return out
+	}
+	codex := map[string]any{}
+	if existing, ok := out["codex"].(map[string]any); ok {
+		codex = DeepMerge(existing)
+	}
+	cwd := strings.TrimSpace(getNestedStringMap(out, "codex", "cwd"))
+	root := strings.TrimSpace(getNestedStringMap(out, "codex", "cwd_root"))
+	if cwd == "" && root != "" {
+		codex["cwd"] = filepath.ToSlash(filepath.Join(root, account))
+	}
+	if len(codex) > 0 {
+		out["codex"] = codex
+	}
+	return out
+}
+
+func getNestedStringMap(m map[string]any, parts ...string) string {
+	value, ok := getNestedValueMap(m, parts...)
+	if !ok {
+		return ""
+	}
+	v, _ := value.(string)
+	return v
+}
+
+func getNestedValueMap(m map[string]any, parts ...string) (any, bool) {
+	cur := any(m)
+	for _, part := range parts {
+		next, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur = next[part]
+	}
+	if cur == nil {
+		return nil, false
+	}
+	return cur, true
+}
+
+func asBool(value any, def bool) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "on":
+			return true
+		case "0", "false", "no", "off":
+			return false
+		default:
+			return def
+		}
+	case int:
+		return v != 0
+	case int64:
+		return v != 0
+	case float64:
+		return v != 0
+	default:
+		return def
+	}
 }

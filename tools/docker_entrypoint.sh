@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_DIR}"
+export SUNCODEXCLAW_IN_CONTAINER=1
 
 cmd="${1:-start}"
 shift || true
@@ -11,7 +12,7 @@ case "${cmd}" in
   start)
     exec /app/bin/suncodexclawd start
     ;;
-  status|stop|restart|list|logs|preflight|configure|launchagents|timer|memory|update)
+  status|stop|restart|list|logs|preflight|configure|launchagents|timer|memory|sync|update)
     exec /app/bin/suncodexclawd "${cmd}" "$@"
     ;;
   shell|bash|sh)

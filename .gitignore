@@ -3,7 +3,6 @@
 
 # env
 .env
-app.env
 
 # build artifacts
 bin/
@@ -18,5 +17,9 @@ node_modules/
 # local runtime config
 config/feishu/*.json
 !config/feishu/*.example.json
+config/feishu/*.toml
+!config/feishu/*.example.toml
+config/secrets/*.toml
+!config/secrets/*.example.toml
 config/secrets/*.yaml
 !config/secrets/*.example.yaml

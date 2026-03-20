@@ -55,8 +55,17 @@ maybe_delegate_to_go_ctl() {
   fi
 
   case "${action}" in
-    list|start|stop|restart|status)
-      exec "${GO_CTL_BIN}" "${action}" "${target:-all}" "${extra[@]}"
+    list)
+      if [[ -n "${target}" && "${target}" != "all" ]]; then
+        exec "${GO_CTL_BIN}" list --account "${target}"
+      fi
+      exec "${GO_CTL_BIN}" list
+      ;;
+    start|stop|restart|status)
+      if [[ -n "${target}" && "${target}" != "all" ]]; then
+        exec "${GO_CTL_BIN}" "${action}" --account "${target}" "${extra[@]}"
+      fi
+      exec "${GO_CTL_BIN}" "${action}" "${extra[@]}"
       ;;
     logs)
       if [[ -z "${target}" || "${target}" == "all" ]]; then
@@ -64,9 +73,9 @@ maybe_delegate_to_go_ctl() {
         exit 1
       fi
       if [[ "${opt3}" == "--follow" || "${opt3}" == "-f" ]]; then
-        exec "${GO_CTL_BIN}" logs "${target}" -f "${extra[@]}"
+        exec "${GO_CTL_BIN}" logs --account "${target}" -f "${extra[@]}"
       else
-        exec "${GO_CTL_BIN}" logs "${target}" "${extra[@]}"
+        exec "${GO_CTL_BIN}" logs --account "${target}" "${extra[@]}"
       fi
       ;;
     *)
@@ -92,48 +101,40 @@ if [[ -z "${NODE_BIN_RESOLVED}" ]]; then
   NODE_BIN_RESOLVED="${NODE_BIN}"
 fi
 
-yaml_config_names() {
-  [[ -f "${REPO_DIR}/tools/lib/local_secret_store.js" ]] || return 0
-  REPO_DIR_ENV="${REPO_DIR}" "${NODE_BIN_RESOLVED}" - <<'EOF' 2>/dev/null || true
-const path = require('path');
-const { listConfigEntryNames } = require(path.join(process.env.REPO_DIR_ENV, 'tools', 'lib', 'local_secret_store.js'));
-for (const name of listConfigEntryNames('feishu')) {
-  if (name === 'default') continue;
-  console.log(name);
-}
-EOF
-}
-
-yaml_config_exists() {
+config_exists_for_account() {
   local account="$1"
-  [[ -f "${REPO_DIR}/tools/lib/local_secret_store.js" ]] || return 1
+  [[ -f "${REPO_DIR}/tools/lib/bot_overlay_store.js" ]] || return 1
   REPO_DIR_ENV="${REPO_DIR}" "${NODE_BIN_RESOLVED}" - "${account}" <<'EOF' >/dev/null 2>&1
 const path = require('path');
 const account = process.argv[2] || '';
 const { readConfigEntry } = require(path.join(process.env.REPO_DIR_ENV, 'tools', 'lib', 'local_secret_store.js'));
-const cfg = readConfigEntry('feishu', account, {});
-process.exit(cfg && Object.keys(cfg).length > 0 ? 0 : 1);
+const { readBotOverlay } = require(path.join(process.env.REPO_DIR_ENV, 'tools', 'lib', 'bot_overlay_store.js'));
+const configDir = path.join(process.env.REPO_DIR_ENV, 'config');
+const overlay = readBotOverlay(configDir);
+const overlayCfg = (overlay.bots && overlay.bots[account]) || {};
+const secretCfg = readConfigEntry('feishu', account, {});
+process.exit((Object.keys(overlayCfg).length > 0 || Object.keys(secretCfg).length > 0) ? 0 : 1);
 EOF
 }
 
-config_exists_for_account() {
-  local account="$1"
-  [[ -f "${CONFIG_DIR}/${account}.json" ]] && return 0
-  yaml_config_exists "${account}"
-}
-
 list_accounts() {
-  {
-    local f base
-    for f in "${CONFIG_DIR}"/*.json; do
-      [[ -e "${f}" ]] || continue
-      base="$(basename "${f}" .json)"
-      [[ "${base}" == "default" ]] && continue
-      [[ "${base}" == *.example ]] && continue
-      printf '%s\n' "${base}"
-    done
-    yaml_config_names
-  } | awk 'NF && !seen[$0]++' | sort
+  [[ -f "${REPO_DIR}/tools/lib/bot_overlay_store.js" ]] || return 1
+  REPO_DIR_ENV="${REPO_DIR}" "${NODE_BIN_RESOLVED}" - <<'EOF' | awk 'NF && !seen[$0]++' | sort
+const path = require('path');
+const { listConfigEntryNames } = require(path.join(process.env.REPO_DIR_ENV, 'tools', 'lib', 'local_secret_store.js'));
+const { readBotOverlay } = require(path.join(process.env.REPO_DIR_ENV, 'tools', 'lib', 'bot_overlay_store.js'));
+const configDir = path.join(process.env.REPO_DIR_ENV, 'config');
+const overlay = readBotOverlay(configDir);
+const names = new Set([
+  ...Object.keys((overlay && overlay.bots) || {}),
+  ...listConfigEntryNames('feishu'),
+]);
+for (const name of [...names].sort()) {
+  if (name && name !== 'default' && !name.endsWith('.example')) {
+    console.log(name);
+  }
+}
+EOF
 }
 
 resolve_accounts() {
@@ -305,10 +306,10 @@ start_one() {
   local pidf logf pid cfg manual
   pidf="$(pid_file "${account}")"
   logf="$(log_file "${account}")"
-  cfg="${CONFIG_DIR}/${account}.json"
+  cfg="${CONFIG_DIR}/bots.toml"
 
   if ! config_exists_for_account "${account}"; then
-    echo "[error] missing config for ${account}: ${cfg} (and no local.yaml entry)" >&2
+    echo "[error] missing config for ${account}: ${cfg} [bot.${account}] or config/secrets/local.toml [feishu.${account}]" >&2
     return 1
   fi
 

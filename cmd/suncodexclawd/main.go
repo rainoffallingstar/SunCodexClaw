@@ -6,21 +6,26 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"suncodexclaw/internal/configstore"
 	"suncodexclaw/internal/memory"
 	"suncodexclaw/internal/supervisor"
 	"suncodexclaw/internal/timer"
 	"suncodexclaw/internal/updater"
 	"suncodexclaw/internal/wizard"
+	"suncodexclaw/internal/worksync"
 )
 
 func main() {
@@ -51,6 +56,8 @@ func main() {
 		timerCmd(os.Args[2:])
 	case "memory":
 		memoryCmd(os.Args[2:])
+	case "sync":
+		syncCmd(os.Args[2:])
 	case "update":
 		updateCmd(os.Args[2:])
 	default:
@@ -61,18 +68,20 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd start [account|all] [--account a] [--account b] [--node-bin node] [--no-launchctl] [--once] [--no-restart] [--max-restarts 20] [--restart-window 10m] [--strict-start] [--start-check-delay 1s]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd stop [account|all] [--account a] [--account b] [--no-launchctl]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd restart [account|all] [--account a] [--account b] [--no-launchctl] [--strict-start] [--start-check-delay 1s]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd status [account|all] [--account a] [--account b] [--no-launchctl]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd list")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd logs <account|all> [--account a] [--follow|-f] [--lines 120] [--no-launchctl]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd preflight [account|all] [--account a] [--account b] [--no-launchctl]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer <start|list|show|upsert|delete|run>")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd start [--docker-compose] [--account a] [--account b] [--node-bin node] [--no-launchctl] [--once] [--no-restart] [--max-restarts 20] [--restart-window 10m] [--strict-start] [--start-check-delay 1s]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd stop [--docker-compose] [--account a] [--account b] [--no-launchctl]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd restart [--docker-compose] [--account a] [--account b] [--no-launchctl] [--strict-start] [--start-check-delay 1s]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd status [--docker-compose] [--account a] [--account b] [--no-launchctl]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd list [--docker-compose] [--account a] [--account b]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd logs [--docker-compose] --account a [--account b|--account all] [--follow|-f] [--lines 120] [--no-launchctl]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd preflight [--docker-compose] [--account a] [--account b] [--no-launchctl]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer <start|list|show|upsert|update|logs|run|enable|disable|delete>")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd memory <add|list|show|search|delete>")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd update [--repo owner/repo] [--version vX.Y.Z] [--bin /path/to/suncodexclawd] [--check] [--dry-run]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd launchagents <install|uninstall|status> [account|all] [--account a] [--account b] [--node-bin node] [--prefix com.sunbelife.suncodexclaw.feishu] [--run-mode node|supervisor] [--daemon-bin ./bin/suncodexclawd] [--codex-bin <path>] [--codex-home <path>] [--path <PATH>] [--keepalive] [--throttle-interval 10]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd configure [--account assistant] [--yes]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd sync <status|list-remote|push|pull|restore>")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd update [--repo owner/repo] [--version vX.Y.Z] [--bin /path/to/suncodexclawd] [--check] [--dry-run] [--docker-compose]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd launchagents <install|uninstall|status> [--account a] [--account b] [--node-bin node] [--prefix com.sunbelife.suncodexclaw.feishu] [--run-mode node|supervisor] [--daemon-bin ./bin/suncodexclawd] [--codex-bin <path>] [--codex-home <path>] [--path <PATH>] [--keepalive] [--throttle-interval 10]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd configure [--docker-compose] --account assistant [--yes]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd configure add [--docker-compose] --account reviewer [--yes]")
 }
 
 type multiFlag []string
@@ -86,14 +95,21 @@ func (m *multiFlag) Set(v string) error {
 func baseFlags(name string) (*flag.FlagSet, *multiFlag, *string, *string) {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	var accounts multiFlag
-	fs.Var(&accounts, "account", "account name (repeatable); default is all discovered accounts")
+	fs.Var(&accounts, "account", "account name (repeatable); default is all enabled accounts")
 	nodeBin := fs.String("node-bin", getenvDefault("NODE_BIN", "node"), "node binary")
 	repo := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	return fs, &accounts, nodeBin, repo
 }
 
 func start(args []string) {
-	args = normalizePositionalAccountArgs(args)
+	if dockerMode, _ := maybeDockerComposeMode(args); dockerMode {
+		if err := runDockerCompose(resolveRepoRoot(""), "up", "-d", "--build"); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	args = stripRuntimeModeFlags(args)
 	fs, accounts, nodeBin, repoFlag := baseFlags("start")
 	healthAddr := fs.String("health-addr", getenvDefault("SUNCODEXCLAW_HEALTH_ADDR", ""), "optional health server addr (e.g. :8080)")
 	noLaunchctl := fs.Bool("no-launchctl", getenvBool("SUNCODEXCLAW_DISABLE_LAUNCHCTL", false), "macOS: disable launchctl detached mode and run in foreground supervisor mode")
@@ -249,7 +265,15 @@ func start(args []string) {
 }
 
 func status(args []string) {
-	args = normalizePositionalAccountArgs(args)
+	if dockerMode, _ := maybeDockerComposeMode(args); dockerMode {
+		repo := resolveRepoRoot("")
+		if err := runDockerCompose(repo, "ps"); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	args = stripRuntimeModeFlags(args)
 	fs, accounts, nodeBin, repoFlag := baseFlags("status")
 	noLaunchctl := fs.Bool("no-launchctl", getenvBool("SUNCODEXCLAW_DISABLE_LAUNCHCTL", false), "macOS: disable launchctl and use pidfile/manual detection only")
 	_ = fs.Parse(args)
@@ -267,7 +291,14 @@ func status(args []string) {
 }
 
 func stop(args []string) {
-	args = normalizePositionalAccountArgs(args)
+	if dockerMode, _ := maybeDockerComposeMode(args); dockerMode {
+		if err := runDockerCompose(resolveRepoRoot(""), "down"); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	args = stripRuntimeModeFlags(args)
 	fs, accounts, nodeBin, repoFlag := baseFlags("stop")
 	noLaunchctl := fs.Bool("no-launchctl", getenvBool("SUNCODEXCLAW_DISABLE_LAUNCHCTL", false), "macOS: disable launchctl and stop only pidfile/manual processes")
 	_ = fs.Parse(args)
@@ -285,7 +316,14 @@ func stop(args []string) {
 }
 
 func restart(args []string) {
-	args = normalizePositionalAccountArgs(args)
+	if dockerMode, _ := maybeDockerComposeMode(args); dockerMode {
+		if err := runDockerCompose(resolveRepoRoot(""), "up", "-d", "--build", "--force-recreate"); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	args = stripRuntimeModeFlags(args)
 	fs, accounts, nodeBin, repoFlag := baseFlags("restart")
 	noLaunchctl := fs.Bool("no-launchctl", getenvBool("SUNCODEXCLAW_DISABLE_LAUNCHCTL", false), "macOS: disable launchctl detached mode and run in foreground supervisor mode")
 	strictStart := fs.Bool("strict-start", getenvBool("SUNCODEXCLAW_STRICT_START", false), "exit non-zero if any account fails to start")
@@ -422,30 +460,83 @@ func restart(args []string) {
 }
 
 func list(args []string) {
-	fs, _, nodeBin, repoFlag := baseFlags("list")
+	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
+		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
+		if err := runDockerComposeServiceCommand(repo, "list", composeArgs...); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	fs, accounts, nodeBin, repoFlag := baseFlags("list")
 	_ = fs.Parse(args)
 	repo := resolveRepoRoot(*repoFlag)
-	sup := supervisor.New(supervisor.Options{RepoRoot: repo, NodeBin: *nodeBin})
-	accts, err := sup.DiscoverAccounts()
+	_ = nodeBin
+	store := configstore.NewStore(repo)
+	accts := uniqueAccounts(*accounts)
+	var err error
+	if len(accts) == 0 {
+		accts, err = store.ListConfiguredAccountNames()
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 	for _, a := range accts {
-		fmt.Println(a)
+		enabled, err := store.BotEnabled(a)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		status := "disabled"
+		if enabled {
+			status = "enabled"
+		}
+		fmt.Printf("%s\t%s\n", a, status)
 	}
 }
 
 func logs(args []string) {
-	args = normalizeLogsArgs(args)
+	if dockerMode, _ := maybeDockerComposeMode(args); dockerMode {
+		repo := resolveRepoRoot("")
+		follow := false
+		lines := "120"
+		for i := 0; i < len(args); i++ {
+			switch args[i] {
+			case "--local":
+			case "--follow", "-f":
+				follow = true
+			case "--lines":
+				if i+1 < len(args) {
+					lines = args[i+1]
+					i++
+				}
+			}
+		}
+		composeArgs := []string{"logs", "--tail", lines}
+		if follow {
+			composeArgs = append(composeArgs, "-f")
+		}
+		composeArgs = append(composeArgs, "suncodexclaw")
+		if err := runDockerCompose(repo, composeArgs...); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	args = stripRuntimeModeFlags(args)
 	fs, accounts, nodeBin, repoFlag := baseFlags("logs")
 	follow := fs.Bool("follow", false, "follow logs")
+	followShort := fs.Bool("f", false, "alias of --follow")
 	lines := fs.Int("lines", 120, "lines to show before following")
 	noLaunchctl := fs.Bool("no-launchctl", getenvBool("SUNCODEXCLAW_DISABLE_LAUNCHCTL", false), "macOS: disable launchctl usage")
 	_ = fs.Parse(args)
 	repo := resolveRepoRoot(*repoFlag)
 
 	sup := supervisor.New(supervisor.Options{RepoRoot: repo, NodeBin: *nodeBin, DisableLaunchctl: *noLaunchctl})
+	if *followShort {
+		*follow = true
+	}
 	accts, all := parseAccounts(*accounts)
 	if all {
 		if err := sup.Logs("all", *follow, *lines); err != nil {
@@ -455,7 +546,7 @@ func logs(args []string) {
 		return
 	}
 	if len(accts) == 0 {
-		fmt.Fprintln(os.Stderr, "error: logs requires one account (or 'all')")
+		fmt.Fprintln(os.Stderr, "error: logs requires --account <account> (or --account all)")
 		os.Exit(2)
 	}
 	// Multiple accounts: support follow by multiplexing their log files.
@@ -493,7 +584,15 @@ func logs(args []string) {
 }
 
 func preflight(args []string) {
-	args = normalizePositionalAccountArgs(args)
+	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
+		dockerArgs := append([]string{"run", "--rm", "suncodexclaw", "preflight"}, composeArgs...)
+		if err := runDockerCompose(resolveRepoRoot(""), dockerArgs...); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	args = stripRuntimeModeFlags(args)
 	fs, accounts, nodeBin, repoFlag := baseFlags("preflight")
 	noLaunchctl := fs.Bool("no-launchctl", getenvBool("SUNCODEXCLAW_DISABLE_LAUNCHCTL", false), "macOS: disable launchctl usage")
 	_ = fs.Parse(args)
@@ -532,11 +631,28 @@ func preflight(args []string) {
 }
 
 func configure(args []string) {
+	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
+		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
+		if err := runDockerComposeServiceCommand(repo, "configure", composeArgs...); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := wizard.Configure(wizard.Options{Args: args}); err != nil {
 		// Flag parsing errors already contain usage hints; keep it simple here.
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+	fs := flag.NewFlagSet("configure", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	account := fs.String("account", "", "feishu account name")
+	_ = fs.Parse(args)
+	if strings.TrimSpace(*account) == "" {
+		fmt.Fprintln(os.Stderr, "error: configure requires --account <account>")
+		os.Exit(2)
+	}
+	fmt.Printf("configured_account=%s\n", *account)
 }
 
 func updateCmd(args []string) {
@@ -546,7 +662,18 @@ func updateCmd(args []string) {
 	binPath := fs.String("bin", "", "target binary path; default is current executable")
 	check := fs.Bool("check", false, "show the selected release asset without replacing the binary")
 	dryRun := fs.Bool("dry-run", false, "download metadata only; do not replace the binary")
+	dockerCompose := fs.Bool("docker-compose", false, "refresh container service through docker compose instead of replacing the local binary")
 	_ = fs.Parse(args)
+	if *dockerCompose {
+		repoRoot := resolveRepoRoot("")
+		if err := runDockerCompose(repoRoot, "up", "-d", "--build", "--force-recreate"); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		fmt.Println("status=updated_docker_compose")
+		fmt.Println("next_step=container_recreated")
+		return
+	}
 
 	result, err := updater.Run(context.Background(), updater.Options{
 		Repo:       *repo,
@@ -583,7 +710,100 @@ func executableNameForRuntime() string {
 	return name
 }
 
+func maybeDockerComposeMode(args []string) (bool, []string) {
+	for _, arg := range args {
+		if arg == "--docker-compose" {
+			return true, stripRuntimeModeFlags(args)
+		}
+	}
+	return false, stripRuntimeModeFlags(args)
+}
+
+func stripRuntimeModeFlags(args []string) []string {
+	out := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "--local" || arg == "--docker-compose" {
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+func runDockerCompose(repo string, args ...string) error {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return fmt.Errorf("--docker-compose requires docker to be installed and available in PATH")
+	}
+	cmd := exec.Command("docker", append([]string{"compose"}, args...)...)
+	cmd.Dir = repo
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	return cmd.Run()
+}
+
+func runDockerComposeServiceCommand(repo string, subcommand string, args ...string) error {
+	if running, err := dockerComposeServiceRunning(repo, "suncodexclaw"); err != nil {
+		return err
+	} else if running {
+		composeArgs := []string{"exec", "suncodexclaw", "suncodexclawd", subcommand}
+		composeArgs = append(composeArgs, args...)
+		return runDockerCompose(repo, composeArgs...)
+	}
+	composeArgs := []string{"run", "--rm", "suncodexclaw", subcommand}
+	composeArgs = append(composeArgs, args...)
+	return runDockerCompose(repo, composeArgs...)
+}
+
+func extractRepoFlag(args []string) string {
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" {
+			continue
+		}
+		if arg == "--repo" {
+			if i+1 < len(args) {
+				return strings.TrimSpace(args[i+1])
+			}
+			return ""
+		}
+		if strings.HasPrefix(arg, "--repo=") {
+			return strings.TrimSpace(strings.TrimPrefix(arg, "--repo="))
+		}
+	}
+	return ""
+}
+
+func dockerComposeServiceRunning(repo string, service string) (bool, error) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return false, fmt.Errorf("--docker-compose requires docker to be installed and available in PATH")
+	}
+	cmd := exec.Command("docker", "compose", "ps", "-q", service)
+	cmd.Dir = repo
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			msg := strings.TrimSpace(string(exitErr.Stderr))
+			if msg == "" {
+				msg = strings.TrimSpace(err.Error())
+			}
+			return false, fmt.Errorf("docker compose ps failed: %s", msg)
+		}
+		return false, err
+	}
+	return strings.TrimSpace(string(out)) != "", nil
+}
+
 func timerCmd(args []string) {
+	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
+		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
+		if err := runDockerComposeServiceCommand(repo, "timer", composeArgs...); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(args) == 0 {
 		timerUsage()
 		os.Exit(2)
@@ -597,6 +817,8 @@ func timerCmd(args []string) {
 		timerShow(args[1:])
 	case "upsert":
 		timerUpsert(args[1:])
+	case "update":
+		timerUpdate(args[1:])
 	case "enable":
 		timerEnableDisable(args[1:], true)
 	case "disable":
@@ -616,6 +838,14 @@ func timerCmd(args []string) {
 }
 
 func memoryCmd(args []string) {
+	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
+		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
+		if err := runDockerComposeServiceCommand(repo, "memory", composeArgs...); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(args) == 0 {
 		memoryUsage()
 		os.Exit(2)
@@ -639,26 +869,68 @@ func memoryCmd(args []string) {
 	}
 }
 
+func syncCmd(args []string) {
+	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
+		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
+		if err := runDockerComposeServiceCommand(repo, "sync", composeArgs...); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(args) == 0 {
+		syncUsage()
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "status":
+		syncStatusCmd(args[1:])
+	case "push":
+		syncPushCmd(args[1:])
+	case "list-remote":
+		syncListRemoteCmd(args[1:])
+	case "pull":
+		syncPullCmd(args[1:])
+	case "restore":
+		syncRestoreCmd(args[1:])
+	case "help", "--help", "-h":
+		syncUsage()
+	default:
+		syncUsage()
+		os.Exit(2)
+	}
+}
+
 func timerUsage() {
 	fmt.Fprintln(os.Stderr, "Timer Usage:")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer start [--node-bin node] [--repo .] [--poll-interval 30s]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer list [--repo .]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer show <id> [--repo .]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer run <id> [--node-bin node] [--repo .]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer logs <id> [--repo .] [--lines 80]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer enable <id> [--repo .]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer disable <id> [--repo .]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer delete <id> [--repo .]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer upsert --id <id> --account assistant --chat-id oc_xxx (--every 1h | --daily 09:00 | --weekly mon,tue --at 09:00) --prompt \"...\" [--cwd /workspace] [--add-dir /workspace/other] [--tz Asia/Shanghai] [--disable]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer start [--docker-compose] [--node-bin node] [--repo .] [--poll-interval 30s]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer list [--docker-compose] [--repo .] --account assistant")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer show <id> [--docker-compose] [--repo .] --account assistant")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer run <id> [--docker-compose] [--node-bin node] [--repo .] --account assistant")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer logs <id> [--docker-compose] [--repo .] --account assistant [--lines 80]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer enable <id> [--docker-compose] [--repo .] --account assistant")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer disable <id> [--docker-compose] [--repo .] --account assistant")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer delete <id> [--docker-compose] [--repo .] --account assistant")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer upsert [--docker-compose] --id <id> --account assistant --chat-id oc_xxx (--every 1h | --daily 09:00 | --weekly mon,tue --at 09:00) --prompt \"...\" [--cwd workspace/assistant] [--add-dir workspace/shared] [--tz Asia/Shanghai] [--disable]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer update <id> [--docker-compose] --account assistant [--prompt \"...\"] [--every 1h | --daily 09:00 | --weekly mon,tue --at 09:00] [--cwd workspace/assistant] [--chat-id oc_xxx] [--add-dir workspace/shared] [--clear-add-dirs] [--enable|--disable]")
 }
 
 func memoryUsage() {
 	fmt.Fprintln(os.Stderr, "Memory Usage:")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd memory add --text \"...\" [--source feishu/assistant/oc_xxx] [--tag foo] [--tag bar] [--repo .]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd memory list [--repo .] [--limit 20]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd memory show <id> [--repo .]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd memory search <keyword> [--repo .] [--limit 20]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd memory delete <id> [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory add [--docker-compose] --account assistant --text \"...\" [--source feishu/assistant/oc_xxx] [--tag foo] [--tag bar] [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory list [--docker-compose] --account assistant [--repo .] [--limit 20]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory show <id> [--docker-compose] --account assistant [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory search <keyword> [--docker-compose] --account assistant [--repo .] [--limit 20]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory delete <id> [--docker-compose] --account assistant [--repo .]")
+}
+
+func syncUsage() {
+	fmt.Fprintln(os.Stderr, "Sync Usage:")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd sync status [--docker-compose] [--repo .] --account assistant [--workspace workspace/assistant] [--workspace-id assistant]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd sync list-remote [--docker-compose] [--repo .] --account assistant [--workspace-id assistant]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd sync push [--docker-compose] [--repo .] --account assistant [--workspace workspace/assistant] [--workspace-id assistant] [--provider webdav] [--webdav-url https://dav.example.com/path] [--webdav-username user] [--webdav-password pass] [--webdav-base-path /SunCodexClaw/backups] [--skip-if-unconfigured]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd sync pull [--docker-compose] [--repo .] --account assistant [--workspace-id assistant] [--snapshot latest|20260320T010203Z] --to .runtime/sync/restore/latest")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd sync restore [--docker-compose] [--repo .] --account assistant [--workspace workspace/assistant] [--workspace-id assistant] [--snapshot latest|20260320T010203Z | --from .runtime/sync/restore/latest] [--force]")
 }
 
 func timerStart(args []string) {
@@ -691,10 +963,16 @@ func timerStart(args []string) {
 func timerList(args []string) {
 	fs := flag.NewFlagSet("timer list", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "timer namespace / robot account name")
 	_ = fs.Parse(args)
 	repo := resolveRepoRoot(*repoFlag)
 	store := timer.NewStore(repo)
-	tasks, err := store.ListTasks()
+	namespace, err := resolveScopedAccount(strings.TrimSpace(*account), "timer")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	tasks, err := store.ListTasks(namespace)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -705,7 +983,7 @@ func timerList(args []string) {
 	}
 	now := time.Now()
 	for _, task := range tasks {
-		st, _ := store.ReadState(task.ID)
+		st, _ := store.ReadState(task.ID, task.StorageAccount)
 		_, nextRun, _ := timer.NextDue(task, st, now)
 		nextText := st.NextRunAt
 		if nextText == "" && !nextRun.IsZero() {
@@ -715,26 +993,33 @@ func timerList(args []string) {
 		if !task.Enabled {
 			status = "disabled"
 		}
-		fmt.Printf("%s status=%s account=%s schedule=%s next=%s chat_id=%s\n", task.ID, status, task.Account, timerScheduleSummary(task.Schedule), emptyFallback(nextText, "(none)"), task.ChatID)
+		namespaceText := emptyFallback(strings.TrimSpace(task.StorageAccount), "global")
+		fmt.Printf("%s namespace=%s status=%s action=%s account=%s schedule=%s next=%s chat_id=%s\n", task.ID, namespaceText, status, emptyFallback(strings.TrimSpace(task.Action), "feishu_codex"), task.Account, timerScheduleSummary(task.Schedule), emptyFallback(nextText, "(none)"), task.ChatID)
 	}
 }
 
 func timerShow(args []string) {
 	fs := flag.NewFlagSet("timer show", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "timer namespace / robot account name")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		timerUsage()
 		os.Exit(2)
 	}
 	repo := resolveRepoRoot(*repoFlag)
-	store := timer.NewStore(repo)
-	task, err := store.ReadTask(fs.Arg(0))
+	namespace, err := resolveScopedAccount(strings.TrimSpace(*account), "timer")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	st, _ := store.ReadState(task.ID)
+	store := timer.NewStore(repo)
+	task, err := store.ReadTask(fs.Arg(0), namespace)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	st, _ := store.ReadState(task.ID, task.StorageAccount)
 	out := map[string]any{
 		"task":  task,
 		"state": st,
@@ -750,18 +1035,24 @@ func timerShow(args []string) {
 func timerDelete(args []string) {
 	fs := flag.NewFlagSet("timer delete", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "timer namespace / robot account name")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		timerUsage()
 		os.Exit(2)
 	}
 	repo := resolveRepoRoot(*repoFlag)
-	store := timer.NewStore(repo)
-	if err := store.DeleteTask(fs.Arg(0)); err != nil {
+	namespace, err := resolveScopedAccount(strings.TrimSpace(*account), "timer")
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("deleted=%s\n", fs.Arg(0))
+	store := timer.NewStore(repo)
+	if err := store.DeleteTask(fs.Arg(0), namespace); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("deleted=%s namespace=%s\n", fs.Arg(0), emptyFallback(namespace, "global"))
 }
 
 func timerEnableDisable(args []string, enabled bool) {
@@ -771,14 +1062,20 @@ func timerEnableDisable(args []string, enabled bool) {
 	}
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "timer namespace / robot account name")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		timerUsage()
 		os.Exit(2)
 	}
 	repo := resolveRepoRoot(*repoFlag)
+	namespace, err := resolveScopedAccount(strings.TrimSpace(*account), "timer")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
 	store := timer.NewStore(repo)
-	task, err := store.SetTaskEnabled(fs.Arg(0), enabled)
+	task, err := store.SetTaskEnabled(fs.Arg(0), namespace, enabled)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -787,34 +1084,41 @@ func timerEnableDisable(args []string, enabled bool) {
 	if !enabled {
 		action = "disabled"
 	}
-	fmt.Printf("%s=%s schedule=%s\n", action, task.ID, timerScheduleSummary(task.Schedule))
+	fmt.Printf("%s=%s namespace=%s schedule=%s\n", action, task.ID, emptyFallback(namespace, "global"), timerScheduleSummary(task.Schedule))
 }
 
 func timerRun(args []string) {
 	fs := flag.NewFlagSet("timer run", flag.ExitOnError)
 	nodeBin := fs.String("node-bin", getenvDefault("NODE_BIN", "node"), "node binary")
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "timer namespace / robot account name")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		timerUsage()
 		os.Exit(2)
 	}
 	repo := resolveRepoRoot(*repoFlag)
+	namespace, err := resolveScopedAccount(strings.TrimSpace(*account), "timer")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
 	mgr := timer.NewManager(timer.Options{
 		RepoRoot: repo,
 		NodeBin:  *nodeBin,
 		Output:   os.Stdout,
 	})
-	if err := mgr.RunTaskNow(context.Background(), fs.Arg(0)); err != nil {
+	if err := mgr.RunTaskNow(context.Background(), fs.Arg(0), namespace); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("run=%s status=ok\n", fs.Arg(0))
+	fmt.Printf("run=%s namespace=%s status=ok\n", fs.Arg(0), emptyFallback(namespace, "global"))
 }
 
 func timerLogs(args []string) {
 	fs := flag.NewFlagSet("timer logs", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "timer namespace / robot account name")
 	lines := fs.Int("lines", 80, "lines to show")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
@@ -822,8 +1126,13 @@ func timerLogs(args []string) {
 		os.Exit(2)
 	}
 	repo := resolveRepoRoot(*repoFlag)
+	namespace, err := resolveScopedAccount(strings.TrimSpace(*account), "timer")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
 	store := timer.NewStore(repo)
-	text, err := store.ReadLogTail(fs.Arg(0), *lines)
+	text, err := store.ReadLogTail(fs.Arg(0), namespace, *lines)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -839,7 +1148,7 @@ func timerUpsert(args []string) {
 	fs := flag.NewFlagSet("timer upsert", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	id := fs.String("id", "", "timer id")
-	account := fs.String("account", "assistant", "feishu account name")
+	account := fs.String("account", "", "feishu account name / timer namespace")
 	chatID := fs.String("chat-id", "", "destination chat id")
 	prompt := fs.String("prompt", "", "task prompt")
 	promptFile := fs.String("prompt-file", "", "task prompt file")
@@ -858,15 +1167,16 @@ func timerUpsert(args []string) {
 	_ = fs.Parse(args)
 
 	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "timer")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
 	store := timer.NewStore(repo)
-	taskPrompt := strings.TrimSpace(*prompt)
-	if strings.TrimSpace(*promptFile) != "" {
-		b, err := os.ReadFile(*promptFile)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
-		}
-		taskPrompt = strings.TrimSpace(string(b))
+	taskPrompt, _, err := resolveOptionalFileBackedText(*prompt, *promptFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
 	}
 	if strings.TrimSpace(*id) == "" {
 		fmt.Fprintln(os.Stderr, "error: --id is required")
@@ -882,7 +1192,7 @@ func timerUpsert(args []string) {
 	task := timer.Task{
 		ID:              strings.TrimSpace(*id),
 		Enabled:         !*disable,
-		Account:         strings.TrimSpace(*account),
+		Account:         resolvedAccount,
 		ChatID:          strings.TrimSpace(*chatID),
 		Prompt:          taskPrompt,
 		Cwd:             strings.TrimSpace(*cwd),
@@ -893,7 +1203,8 @@ func timerUpsert(args []string) {
 		UpdatedAt:       now,
 		LastUpdatedBy:   strings.TrimSpace(*updatedBy),
 	}
-	if existing, err := store.ReadTask(task.ID); err == nil {
+	namespaceAccount := resolvedAccount
+	if existing, err := store.ReadTask(task.ID, namespaceAccount); err == nil {
 		task.CreatedAt = existing.CreatedAt
 		if task.ChatID == "" {
 			task.ChatID = existing.ChatID
@@ -904,16 +1215,249 @@ func timerUpsert(args []string) {
 	if task.CreatedAt == "" {
 		task.CreatedAt = now
 	}
-	if err := store.WriteTask(task); err != nil {
+	if err := store.WriteTask(task, namespaceAccount); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 	fmt.Printf("upserted=%s schedule=%s chat_id=%s enabled=%t\n", task.ID, timerScheduleSummary(task.Schedule), task.ChatID, task.Enabled)
 }
 
+func timerUpdate(args []string) {
+	fs := flag.NewFlagSet("timer update", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "timer namespace / robot account name")
+	chatID := fs.String("chat-id", "", "destination chat id")
+	prompt := fs.String("prompt", "", "task prompt")
+	promptFile := fs.String("prompt-file", "", "task prompt file")
+	cwd := fs.String("cwd", "", "working directory")
+	every := fs.String("every", "", "interval schedule, e.g. 1h")
+	daily := fs.String("daily", "", "daily schedule time, e.g. 09:00")
+	weekly := fs.String("weekly", "", "weekly schedule weekdays, e.g. mon,tue,fri")
+	at := fs.String("at", "", "time for weekly/daily schedule, e.g. 09:00")
+	tz := fs.String("tz", "", "timezone, e.g. Asia/Shanghai")
+	model := fs.String("model", "", "optional codex model override")
+	reasoning := fs.String("reasoning-effort", "", "optional codex reasoning effort override")
+	enable := fs.Bool("enable", false, "enable task after update")
+	disable := fs.Bool("disable", false, "disable task after update")
+	clearAddDirs := fs.Bool("clear-add-dirs", false, "clear existing add_dirs")
+	updatedBy := fs.String("updated-by", "", "free-form updater label")
+	var addDirs multiFlag
+	fs.Var(&addDirs, "add-dir", "additional directory (repeatable)")
+	_ = fs.Parse(args)
+
+	if *enable && *disable {
+		fmt.Fprintln(os.Stderr, "error: choose at most one of --enable or --disable")
+		os.Exit(2)
+	}
+	if fs.NArg() != 1 {
+		timerUsage()
+		os.Exit(2)
+	}
+
+	repo := resolveRepoRoot(*repoFlag)
+	store := timer.NewStore(repo)
+	namespaceAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "timer")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	existing, err := store.ReadTask(fs.Arg(0), namespaceAccount)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+
+	nextTask, err := buildUpdatedTimerTask(existing, timerUpdateInput{
+		Account:      *account,
+		ChatID:       *chatID,
+		Prompt:       *prompt,
+		PromptFile:   *promptFile,
+		Cwd:          *cwd,
+		Every:        *every,
+		Daily:        *daily,
+		Weekly:       *weekly,
+		At:           *at,
+		TZ:           *tz,
+		Model:        *model,
+		Reasoning:    *reasoning,
+		Enable:       *enable,
+		Disable:      *disable,
+		AddDirs:      addDirs,
+		ClearAddDirs: *clearAddDirs,
+		UpdatedBy:    *updatedBy,
+	}, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(2)
+	}
+	if err := store.WriteTask(nextTask, namespaceAccount); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("updated=%s schedule=%s chat_id=%s enabled=%t\n", nextTask.ID, timerScheduleSummary(nextTask.Schedule), nextTask.ChatID, nextTask.Enabled)
+}
+
+type timerUpdateInput struct {
+	Account      string
+	ChatID       string
+	Prompt       string
+	PromptFile   string
+	Cwd          string
+	Every        string
+	Daily        string
+	Weekly       string
+	At           string
+	TZ           string
+	Model        string
+	Reasoning    string
+	Enable       bool
+	Disable      bool
+	AddDirs      []string
+	ClearAddDirs bool
+	UpdatedBy    string
+}
+
+func buildUpdatedTimerTask(existing timer.Task, in timerUpdateInput, now string) (timer.Task, error) {
+	task := existing
+	task.UpdatedAt = now
+	if strings.TrimSpace(in.UpdatedBy) != "" {
+		task.LastUpdatedBy = strings.TrimSpace(in.UpdatedBy)
+	}
+	if strings.TrimSpace(in.Account) != "" {
+		task.Account = strings.TrimSpace(in.Account)
+	}
+	if strings.TrimSpace(in.ChatID) != "" {
+		task.ChatID = strings.TrimSpace(in.ChatID)
+	}
+	if strings.TrimSpace(in.Cwd) != "" {
+		task.Cwd = strings.TrimSpace(in.Cwd)
+	}
+	if strings.TrimSpace(in.Model) != "" {
+		task.Model = strings.TrimSpace(in.Model)
+	}
+	if strings.TrimSpace(in.Reasoning) != "" {
+		task.ReasoningEffort = strings.TrimSpace(in.Reasoning)
+	}
+	if in.Enable {
+		task.Enabled = true
+	}
+	if in.Disable {
+		task.Enabled = false
+	}
+	if in.ClearAddDirs {
+		task.AddDirs = nil
+	}
+	if len(normalizeStringSlice(in.AddDirs)) > 0 {
+		task.AddDirs = normalizeStringSlice(in.AddDirs)
+	}
+	if promptValue, provided, err := resolveOptionalFileBackedText(in.Prompt, in.PromptFile); err != nil {
+		return timer.Task{}, err
+	} else if provided {
+		task.Prompt = promptValue
+	}
+	if schedule, changed, err := resolveUpdatedTimerSchedule(existing.Schedule, in.Every, in.Daily, in.Weekly, in.At, in.TZ); err != nil {
+		return timer.Task{}, err
+	} else if changed {
+		task.Schedule = schedule
+	}
+	return task, nil
+}
+
+func resolveOptionalFileBackedText(text, filePath string) (string, bool, error) {
+	if strings.TrimSpace(filePath) != "" {
+		b, err := os.ReadFile(filePath)
+		if err != nil {
+			return "", false, err
+		}
+		return strings.TrimSpace(string(b)), true, nil
+	}
+	if strings.TrimSpace(text) != "" {
+		return strings.TrimSpace(text), true, nil
+	}
+	return "", false, nil
+}
+
+func resolveUpdatedTimerSchedule(existing timer.Schedule, every, daily, weekly, at, tz string) (timer.Schedule, bool, error) {
+	every = strings.TrimSpace(every)
+	daily = strings.TrimSpace(daily)
+	weekly = strings.TrimSpace(weekly)
+	at = strings.TrimSpace(at)
+	tz = strings.TrimSpace(tz)
+
+	modeCount := 0
+	for _, raw := range []string{every, daily, weekly} {
+		if raw != "" {
+			modeCount++
+		}
+	}
+	if modeCount > 1 {
+		return timer.Schedule{}, false, fmt.Errorf("choose at most one schedule mode for update: --every | --daily | --weekly")
+	}
+	if modeCount == 0 && at == "" && tz == "" {
+		return existing, false, nil
+	}
+
+	if every != "" {
+		return timer.Schedule{
+			Kind:     "interval",
+			Every:    every,
+			Timezone: fallbackString(tz, existing.Timezone),
+		}, true, nil
+	}
+	if daily != "" {
+		return timer.Schedule{
+			Kind:     "daily",
+			At:       daily,
+			Timezone: fallbackString(tz, existing.Timezone),
+		}, true, nil
+	}
+	if weekly != "" {
+		weekdays := splitCSVValues(weekly)
+		if len(weekdays) == 0 {
+			return timer.Schedule{}, false, fmt.Errorf("weekly schedule requires weekdays")
+		}
+		atValue := at
+		if atValue == "" {
+			atValue = existing.At
+		}
+		if strings.TrimSpace(atValue) == "" {
+			return timer.Schedule{}, false, fmt.Errorf("weekly schedule requires --at HH:MM")
+		}
+		return timer.Schedule{
+			Kind:     "weekly",
+			Weekdays: weekdays,
+			At:       atValue,
+			Timezone: fallbackString(tz, existing.Timezone),
+		}, true, nil
+	}
+
+	schedule := existing
+	switch strings.TrimSpace(existing.Kind) {
+	case "daily":
+		if at != "" {
+			schedule.At = at
+		}
+		if tz != "" {
+			schedule.Timezone = tz
+		}
+		return schedule, true, nil
+	case "weekly":
+		if at != "" {
+			schedule.At = at
+		}
+		if tz != "" {
+			schedule.Timezone = tz
+		}
+		return schedule, true, nil
+	default:
+		return timer.Schedule{}, false, fmt.Errorf("timer %s schedule kind does not support partial update with --at/--tz only", existing.Kind)
+	}
+}
+
 func memoryAdd(args []string) {
 	fs := flag.NewFlagSet("memory add", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "memory library / robot account name")
 	text := fs.String("text", "", "memory text")
 	textFile := fs.String("text-file", "", "memory text file")
 	source := fs.String("source", "", "memory source label")
@@ -922,6 +1466,11 @@ func memoryAdd(args []string) {
 	_ = fs.Parse(args)
 
 	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "sync")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
 	memoryText := strings.TrimSpace(*text)
 	if strings.TrimSpace(*textFile) != "" {
 		b, err := os.ReadFile(*textFile)
@@ -938,22 +1487,28 @@ func memoryAdd(args []string) {
 		fmt.Fprintln(os.Stderr, "error: memory text is required")
 		os.Exit(2)
 	}
-	store := memory.NewStore(repo)
+	store := memory.NewLibraryStore(repo, resolvedAccount)
 	entry, err := store.Add(memoryText, *source, tags)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("added=%s source=%s tags=%s text=%s\n", entry.ID, emptyFallback(entry.Source, "(none)"), emptyFallback(strings.Join(entry.Tags, ","), "(none)"), compactSingleLine(entry.Text, 120))
+	fmt.Printf("library=%s added=%s source=%s tags=%s text=%s\n", sanitizePathSegment(resolvedAccount), entry.ID, emptyFallback(entry.Source, "(none)"), emptyFallback(strings.Join(entry.Tags, ","), "(none)"), compactSingleLine(entry.Text, 120))
 }
 
 func memoryList(args []string) {
 	fs := flag.NewFlagSet("memory list", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "memory library / robot account name")
 	limit := fs.Int("limit", 20, "max memories to show")
 	_ = fs.Parse(args)
 	repo := resolveRepoRoot(*repoFlag)
-	store := memory.NewStore(repo)
+	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "sync")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	store := memory.NewLibraryStore(repo, resolvedAccount)
 	entries, err := store.ListEntries()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -974,13 +1529,19 @@ func memoryList(args []string) {
 func memoryShow(args []string) {
 	fs := flag.NewFlagSet("memory show", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "memory library / robot account name")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		memoryUsage()
 		os.Exit(2)
 	}
 	repo := resolveRepoRoot(*repoFlag)
-	store := memory.NewStore(repo)
+	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "memory")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	store := memory.NewLibraryStore(repo, resolvedAccount)
 	entry, err := store.ReadEntry(fs.Arg(0))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -997,6 +1558,7 @@ func memoryShow(args []string) {
 func memorySearch(args []string) {
 	fs := flag.NewFlagSet("memory search", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "memory library / robot account name")
 	limit := fs.Int("limit", 20, "max memories to show")
 	_ = fs.Parse(args)
 	query := strings.TrimSpace(strings.Join(fs.Args(), " "))
@@ -1005,7 +1567,12 @@ func memorySearch(args []string) {
 		os.Exit(2)
 	}
 	repo := resolveRepoRoot(*repoFlag)
-	store := memory.NewStore(repo)
+	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "memory")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	store := memory.NewLibraryStore(repo, resolvedAccount)
 	entries, err := store.Search(query, *limit)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -1023,18 +1590,354 @@ func memorySearch(args []string) {
 func memoryDelete(args []string) {
 	fs := flag.NewFlagSet("memory delete", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "memory library / robot account name")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		memoryUsage()
 		os.Exit(2)
 	}
 	repo := resolveRepoRoot(*repoFlag)
-	store := memory.NewStore(repo)
+	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "memory")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	store := memory.NewLibraryStore(repo, resolvedAccount)
 	if err := store.DeleteEntry(fs.Arg(0)); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 	fmt.Printf("deleted=%s\n", fs.Arg(0))
+}
+
+func syncStatusCmd(args []string) {
+	fs := flag.NewFlagSet("sync status", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "feishu account name")
+	workspace := fs.String("workspace", "", "workspace directory to back up")
+	workspaceID := fs.String("workspace-id", "", "logical workspace id for remote paths")
+	provider := fs.String("provider", "", "sync provider (default: webdav)")
+	webdavURL := fs.String("webdav-url", "", "webdav base url")
+	webdavBasePath := fs.String("webdav-base-path", "", "remote base path under webdav")
+	_ = fs.Parse(args)
+
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "sync")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	cfg, workspaceDir, err := loadSyncConfig(repo, resolvedAccount, syncFlagConfig{
+		Workspace:      *workspace,
+		WorkspaceID:    *workspaceID,
+		Provider:       *provider,
+		WebDAVURL:      *webdavURL,
+		WebDAVBasePath: *webdavBasePath,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	mgr := worksync.NewManager(worksync.Options{
+		RepoRoot:     repo,
+		WorkspaceDir: workspaceDir,
+		WorkspaceID:  cfg.WorkspaceID,
+	})
+	status, err := mgr.Status(cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("provider=%s configured=%t\n", emptyFallback(status.Provider, "(none)"), status.Configured)
+	fmt.Printf("workspace=%s\n", status.WorkspaceDir)
+	fmt.Printf("workspace_id=%s\n", status.WorkspaceID)
+	fmt.Printf("state=%s\n", status.StatePath)
+	fmt.Printf("remote_base=%s\n", emptyFallback(status.RemoteBase, "(not configured)"))
+	fmt.Printf("last_push_at=%s\n", emptyFallback(status.LastPushAt, "(never)"))
+	for _, item := range status.Files {
+		fmt.Printf("%s exists=%t size=%d sha256=%s path=%s\n", item.Name, item.Exists, item.Size, emptyFallback(item.SHA256, "(none)"), item.Path)
+	}
+}
+
+func syncPushCmd(args []string) {
+	fs := flag.NewFlagSet("sync push", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "feishu account name")
+	workspace := fs.String("workspace", "", "workspace directory to back up")
+	workspaceID := fs.String("workspace-id", "", "logical workspace id for remote paths")
+	provider := fs.String("provider", "", "sync provider (default: webdav)")
+	webdavURL := fs.String("webdav-url", "", "webdav base url")
+	webdavUsername := fs.String("webdav-username", "", "webdav username")
+	webdavPassword := fs.String("webdav-password", "", "webdav password")
+	webdavBasePath := fs.String("webdav-base-path", "", "remote base path under webdav")
+	timeoutSec := fs.Int("timeout-sec", 30, "http timeout in seconds")
+	skipIfUnconfigured := fs.Bool("skip-if-unconfigured", false, "exit successfully when sync backend is not configured")
+	_ = fs.Parse(args)
+
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "sync")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	cfg, workspaceDir, err := loadSyncConfig(repo, resolvedAccount, syncFlagConfig{
+		Workspace:      *workspace,
+		WorkspaceID:    *workspaceID,
+		Provider:       *provider,
+		WebDAVURL:      *webdavURL,
+		WebDAVUsername: *webdavUsername,
+		WebDAVPassword: *webdavPassword,
+		WebDAVBasePath: *webdavBasePath,
+		TimeoutSeconds: *timeoutSec,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if !syncConfigReady(cfg) {
+		if *skipIfUnconfigured {
+			fmt.Println("status=skipped reason=sync_not_configured")
+			fmt.Printf("workspace=%s\n", workspaceDir)
+			fmt.Printf("workspace_id=%s\n", cfg.WorkspaceID)
+			os.Exit(0)
+		}
+		fmt.Fprintln(os.Stderr, "error: sync backend is not configured")
+		os.Exit(1)
+	}
+	mgr := worksync.NewManager(worksync.Options{
+		RepoRoot:     repo,
+		WorkspaceDir: workspaceDir,
+		WorkspaceID:  cfg.WorkspaceID,
+	})
+	result, err := mgr.Push(context.Background(), cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("provider=%s\n", cfg.Provider)
+	fmt.Printf("workspace=%s\n", result.WorkspaceDir)
+	fmt.Printf("workspace_id=%s\n", result.WorkspaceID)
+	fmt.Printf("remote_base=%s\n", result.RemoteBase)
+	fmt.Printf("snapshot=%s\n", result.Snapshot)
+	fmt.Printf("state=%s\n", result.StatePath)
+	for _, item := range result.Uploaded {
+		fmt.Printf("uploaded=%s size=%d sha256=%s latest=%s snapshot_path=%s\n", item.Name, item.Size, item.SHA256, item.LatestPath, item.SnapshotPath)
+	}
+	if len(result.Missing) > 0 {
+		fmt.Printf("missing=%s\n", strings.Join(result.Missing, ","))
+	}
+	fmt.Println("status=ok")
+}
+
+func syncListRemoteCmd(args []string) {
+	fs := flag.NewFlagSet("sync list-remote", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "feishu account name")
+	workspaceID := fs.String("workspace-id", "", "logical workspace id for remote paths")
+	provider := fs.String("provider", "", "sync provider (default: webdav)")
+	webdavURL := fs.String("webdav-url", "", "webdav base url")
+	webdavUsername := fs.String("webdav-username", "", "webdav username")
+	webdavPassword := fs.String("webdav-password", "", "webdav password")
+	webdavBasePath := fs.String("webdav-base-path", "", "remote base path under webdav")
+	_ = fs.Parse(args)
+
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "sync")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	cfg, _, err := loadSyncConfig(repo, resolvedAccount, syncFlagConfig{
+		WorkspaceID:    *workspaceID,
+		Provider:       *provider,
+		WebDAVURL:      *webdavURL,
+		WebDAVUsername: *webdavUsername,
+		WebDAVPassword: *webdavPassword,
+		WebDAVBasePath: *webdavBasePath,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if !syncConfigReady(cfg) {
+		fmt.Fprintln(os.Stderr, "error: sync backend is not configured")
+		os.Exit(1)
+	}
+	mgr := worksync.NewManager(worksync.Options{
+		RepoRoot:     repo,
+		WorkspaceDir: filepath.Join(repo, "workspace"),
+		WorkspaceID:  cfg.WorkspaceID,
+	})
+	result, err := mgr.ListRemote(context.Background(), cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("workspace_id=%s\n", result.WorkspaceID)
+	fmt.Printf("remote_base=%s\n", result.RemoteBase)
+	if len(result.Snapshots) == 0 {
+		fmt.Println("(no remote snapshots)")
+		return
+	}
+	for _, item := range result.Snapshots {
+		fmt.Printf("snapshot=%s\n", item.Name)
+	}
+}
+
+func syncPullCmd(args []string) {
+	fs := flag.NewFlagSet("sync pull", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "feishu account name")
+	workspaceID := fs.String("workspace-id", "", "logical workspace id for remote paths")
+	snapshot := fs.String("snapshot", "latest", "remote snapshot name or latest")
+	targetDir := fs.String("to", "", "local target dir for pulled files")
+	provider := fs.String("provider", "", "sync provider (default: webdav)")
+	webdavURL := fs.String("webdav-url", "", "webdav base url")
+	webdavUsername := fs.String("webdav-username", "", "webdav username")
+	webdavPassword := fs.String("webdav-password", "", "webdav password")
+	webdavBasePath := fs.String("webdav-base-path", "", "remote base path under webdav")
+	_ = fs.Parse(args)
+	if strings.TrimSpace(*targetDir) == "" {
+		fmt.Fprintln(os.Stderr, "error: --to is required")
+		os.Exit(2)
+	}
+
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "sync")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	cfg, _, err := loadSyncConfig(repo, resolvedAccount, syncFlagConfig{
+		WorkspaceID:    *workspaceID,
+		Provider:       *provider,
+		WebDAVURL:      *webdavURL,
+		WebDAVUsername: *webdavUsername,
+		WebDAVPassword: *webdavPassword,
+		WebDAVBasePath: *webdavBasePath,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if !syncConfigReady(cfg) {
+		fmt.Fprintln(os.Stderr, "error: sync backend is not configured")
+		os.Exit(1)
+	}
+	target := *targetDir
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(repo, target)
+	}
+	mgr := worksync.NewManager(worksync.Options{
+		RepoRoot:     repo,
+		WorkspaceDir: filepath.Join(repo, "workspace"),
+		WorkspaceID:  cfg.WorkspaceID,
+	})
+	result, err := mgr.Pull(context.Background(), cfg, strings.TrimSpace(*snapshot), target)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("workspace_id=%s\n", result.WorkspaceID)
+	fmt.Printf("remote_base=%s\n", result.RemoteBase)
+	fmt.Printf("snapshot=%s\n", result.Snapshot)
+	fmt.Printf("target=%s\n", result.TargetDir)
+	for _, item := range result.Files {
+		fmt.Printf("pulled=%s size=%d path=%s\n", item.Name, item.Size, item.Path)
+	}
+	fmt.Println("status=ok")
+}
+
+func syncRestoreCmd(args []string) {
+	fs := flag.NewFlagSet("sync restore", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "feishu account name")
+	workspace := fs.String("workspace", "", "workspace directory to restore into")
+	workspaceID := fs.String("workspace-id", "", "logical workspace id for remote paths")
+	snapshot := fs.String("snapshot", "", "remote snapshot name or latest")
+	fromDir := fs.String("from", "", "local pulled directory to restore from")
+	force := fs.Bool("force", false, "overwrite existing workspace documents")
+	provider := fs.String("provider", "", "sync provider (default: webdav)")
+	webdavURL := fs.String("webdav-url", "", "webdav base url")
+	webdavUsername := fs.String("webdav-username", "", "webdav username")
+	webdavPassword := fs.String("webdav-password", "", "webdav password")
+	webdavBasePath := fs.String("webdav-base-path", "", "remote base path under webdav")
+	_ = fs.Parse(args)
+
+	if strings.TrimSpace(*snapshot) != "" && strings.TrimSpace(*fromDir) != "" {
+		fmt.Fprintln(os.Stderr, "error: choose one of --snapshot or --from")
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "sync")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	cfg, workspaceDir, err := loadSyncConfig(repo, resolvedAccount, syncFlagConfig{
+		Workspace:      *workspace,
+		WorkspaceID:    *workspaceID,
+		Provider:       *provider,
+		WebDAVURL:      *webdavURL,
+		WebDAVUsername: *webdavUsername,
+		WebDAVPassword: *webdavPassword,
+		WebDAVBasePath: *webdavBasePath,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	mgr := worksync.NewManager(worksync.Options{
+		RepoRoot:     repo,
+		WorkspaceDir: workspaceDir,
+		WorkspaceID:  cfg.WorkspaceID,
+	})
+
+	sourceDir := strings.TrimSpace(*fromDir)
+	cleanupDir := ""
+	if sourceDir == "" {
+		if !syncConfigReady(cfg) {
+			fmt.Fprintln(os.Stderr, "error: sync backend is not configured")
+			os.Exit(1)
+		}
+		restoreSnapshot := strings.TrimSpace(*snapshot)
+		if restoreSnapshot == "" {
+			restoreSnapshot = "latest"
+		}
+		stageName := restoreSnapshot
+		if stageName == "" {
+			stageName = "latest"
+		}
+		stageName = sanitizePathSegment(stageName)
+		cleanupDir = filepath.Join(repo, ".runtime", "sync", cfg.WorkspaceID, "restore", ".staging", stageName+"-"+time.Now().UTC().Format("20060102T150405Z"))
+		pullResult, err := mgr.Pull(context.Background(), cfg, restoreSnapshot, cleanupDir)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		sourceDir = pullResult.TargetDir
+	}
+	if !filepath.IsAbs(sourceDir) {
+		sourceDir = filepath.Join(repo, sourceDir)
+	}
+	result, err := mgr.Restore(sourceDir, *force)
+	if cleanupDir != "" {
+		defer os.RemoveAll(cleanupDir)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("workspace_id=%s\n", result.WorkspaceID)
+	fmt.Printf("workspace=%s\n", result.WorkspaceDir)
+	fmt.Printf("source=%s\n", result.SourceDir)
+	for _, item := range result.Files {
+		fmt.Printf("restored=%s size=%d path=%s\n", item.Name, item.Size, item.Path)
+	}
+	for _, item := range result.Skipped {
+		fmt.Printf("skipped=%s path=%s reason=exists\n", item.Name, item.Path)
+	}
+	fmt.Println("status=ok")
 }
 
 func buildTimerSchedule(every, daily, weekly, at, tz string) (timer.Schedule, error) {
@@ -1054,12 +1957,18 @@ func buildTimerSchedule(every, daily, weekly, at, tz string) (timer.Schedule, er
 		return timer.Schedule{Kind: "daily", At: strings.TrimSpace(daily), Timezone: strings.TrimSpace(tz)}, nil
 	}
 	parts := []string{}
-	for _, item := range strings.Split(weekly, ",") {
+	parts = splitCSVValues(weekly)
+	return timer.Schedule{Kind: "weekly", Weekdays: parts, At: strings.TrimSpace(at), Timezone: strings.TrimSpace(tz)}, nil
+}
+
+func splitCSVValues(raw string) []string {
+	parts := []string{}
+	for _, item := range strings.Split(raw, ",") {
 		if trimmed := strings.TrimSpace(item); trimmed != "" {
 			parts = append(parts, trimmed)
 		}
 	}
-	return timer.Schedule{Kind: "weekly", Weekdays: parts, At: strings.TrimSpace(at), Timezone: strings.TrimSpace(tz)}, nil
+	return parts
 }
 
 func timerScheduleSummary(schedule timer.Schedule) string {
@@ -1103,6 +2012,210 @@ func emptyFallback(value, fallback string) string {
 	return value
 }
 
+func fallbackString(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return strings.TrimSpace(fallback)
+	}
+	return strings.TrimSpace(value)
+}
+
+func sanitizePathSegment(raw string) string {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return "default"
+	}
+	replacer := strings.NewReplacer("/", "-", "\\", "-", " ", "-", ":", "-", "..", "-")
+	text = replacer.Replace(text)
+	text = strings.Trim(text, "-.")
+	if text == "" {
+		return "default"
+	}
+	return text
+}
+
+func resolveScopedAccount(explicit string, scope string) (string, error) {
+	explicit = strings.TrimSpace(explicit)
+	if explicit != "" {
+		return explicit, nil
+	}
+	cwd, err := os.Getwd()
+	if err == nil {
+		account, cfgPath, cfgErr := configstore.ResolveRuntimeAccountFromDir(cwd, scope)
+		if cfgErr != nil {
+			return "", fmt.Errorf("failed to read runtime account from %s: %w", cfgPath, cfgErr)
+		}
+		if strings.TrimSpace(account) != "" {
+			return account, nil
+		}
+	}
+	return "", fmt.Errorf("--account <account> is required")
+}
+
+type syncFlagConfig struct {
+	Workspace      string
+	WorkspaceID    string
+	Provider       string
+	WebDAVURL      string
+	WebDAVUsername string
+	WebDAVPassword string
+	WebDAVBasePath string
+	TimeoutSeconds int
+}
+
+func loadSyncConfig(repo, account string, flags syncFlagConfig) (worksync.Config, string, error) {
+	store := configstore.NewStore(repo)
+	secretDefault, _ := store.ReadSecretsEntry("sync", "default")
+	secretAccount, _ := store.ReadSecretsEntry("sync", account)
+	workspaceDir, err := resolveSyncWorkspaceDir(repo, account, flags.Workspace, store)
+	if err != nil {
+		return worksync.Config{}, "", err
+	}
+	cfg := worksync.Config{
+		Provider:       firstNonEmpty(strings.TrimSpace(flags.Provider), strings.TrimSpace(os.Getenv("SUNCODEXCLAW_SYNC_PROVIDER")), strings.TrimSpace(getNestedString(secretAccount, "provider")), strings.TrimSpace(getNestedString(secretDefault, "provider")), "webdav"),
+		WebDAVURL:      firstNonEmpty(strings.TrimSpace(flags.WebDAVURL), strings.TrimSpace(os.Getenv("SUNCODEXCLAW_SYNC_WEBDAV_URL")), strings.TrimSpace(getNestedString(secretAccount, "webdav", "url")), strings.TrimSpace(getNestedString(secretDefault, "webdav", "url"))),
+		WebDAVUsername: firstNonEmpty(strings.TrimSpace(flags.WebDAVUsername), strings.TrimSpace(os.Getenv("SUNCODEXCLAW_SYNC_WEBDAV_USERNAME")), strings.TrimSpace(getNestedString(secretAccount, "webdav", "username")), strings.TrimSpace(getNestedString(secretDefault, "webdav", "username"))),
+		WebDAVPassword: firstNonEmpty(strings.TrimSpace(flags.WebDAVPassword), strings.TrimSpace(os.Getenv("SUNCODEXCLAW_SYNC_WEBDAV_PASSWORD")), strings.TrimSpace(getNestedString(secretAccount, "webdav", "password")), strings.TrimSpace(getNestedString(secretDefault, "webdav", "password"))),
+		WebDAVBasePath: firstNonEmpty(strings.TrimSpace(flags.WebDAVBasePath), strings.TrimSpace(os.Getenv("SUNCODEXCLAW_SYNC_WEBDAV_BASE_PATH")), strings.TrimSpace(getNestedString(secretAccount, "webdav", "base_path")), strings.TrimSpace(getNestedString(secretDefault, "webdav", "base_path")), "/SunCodexClaw/backups"),
+		WorkspaceID:    firstNonEmpty(strings.TrimSpace(flags.WorkspaceID), strings.TrimSpace(getNestedString(secretAccount, "workspace_id")), defaultSyncWorkspaceID(account)),
+		Timeout:        time.Duration(maxInt(flags.TimeoutSeconds, getenvInt("SUNCODEXCLAW_SYNC_TIMEOUT_SEC", 30))) * time.Second,
+	}
+	return cfg, workspaceDir, nil
+}
+
+func defaultSyncWorkspaceID(account string) string {
+	raw := strings.TrimSpace(account)
+	if raw == "" {
+		return "default"
+	}
+	var b strings.Builder
+	for _, r := range raw {
+		switch {
+		case r == '/' || r == '\\' || r == ' ' || r == ':':
+			b.WriteByte('-')
+		case r == '.':
+			b.WriteByte('-')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	out := strings.Trim(b.String(), "-.")
+	if out == "" {
+		return "default"
+	}
+	return out
+}
+
+func resolveSyncWorkspaceDir(repo, account, explicit string, store *configstore.Store) (string, error) {
+	raw := firstNonEmpty(
+		strings.TrimSpace(explicit),
+		strings.TrimSpace(os.Getenv(accountEnvKey(account, "CODEX_CWD"))),
+		strings.TrimSpace(os.Getenv(accountEnvKey(account, "CODEX_CD"))),
+		strings.TrimSpace(os.Getenv("FEISHU_CODEX_CWD")),
+		strings.TrimSpace(os.Getenv("FEISHU_CODEX_CD")),
+	)
+	if raw == "" && store != nil {
+		if overlay, err := store.ReadOverlay(account); err == nil {
+			raw = firstNonEmpty(strings.TrimSpace(getNestedString(overlay, "codex", "cwd")), strings.TrimSpace(getNestedString(overlay, "codex", "cd")))
+		}
+	}
+	if raw == "" && store != nil {
+		if secrets, err := store.ReadSecretsEntry("feishu", account); err == nil {
+			raw = firstNonEmpty(strings.TrimSpace(getNestedString(secrets, "codex", "cwd")), strings.TrimSpace(getNestedString(secrets, "codex", "cd")))
+		}
+	}
+	if raw == "" {
+		candidate := filepath.Join(repo, "workspace")
+		if exists(candidate) {
+			raw = candidate
+		}
+	}
+	if strings.TrimSpace(raw) == "" {
+		return "", fmt.Errorf("workspace dir is not set; use --workspace or FEISHU_CODEX_CWD")
+	}
+	if filepath.IsAbs(raw) {
+		return raw, nil
+	}
+	return filepath.Join(repo, raw), nil
+}
+
+func accountEnvKey(account, suffix string) string {
+	raw := strings.TrimSpace(account)
+	if raw == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("FEISHU_")
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r - ('a' - 'A'))
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	b.WriteByte('_')
+	b.WriteString(suffix)
+	return b.String()
+}
+
+func getNestedString(root map[string]any, parts ...string) string {
+	var cur any = root
+	for _, part := range parts {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return ""
+		}
+		cur, ok = m[part]
+		if !ok {
+			return ""
+		}
+	}
+	switch v := cur.(type) {
+	case string:
+		return v
+	case fmt.Stringer:
+		return v.String()
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(v)
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	default:
+		return ""
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func syncConfigReady(cfg worksync.Config) bool {
+	if strings.TrimSpace(cfg.Provider) != "webdav" {
+		return false
+	}
+	return strings.TrimSpace(cfg.WebDAVURL) != "" && strings.TrimSpace(cfg.WebDAVUsername) != "" && strings.TrimSpace(cfg.WebDAVPassword) != ""
+}
+
 func compactSingleLine(value string, max int) string {
 	text := strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 	if max <= 0 || len(text) <= max {
@@ -1132,7 +2245,6 @@ func launchagents(args []string) {
 	}
 	action := strings.TrimSpace(args[0])
 	args = args[1:]
-	args = normalizePositionalAccountArgs(args)
 
 	fs, accounts, nodeBin, repoFlag := baseFlags("launchagents")
 	runMode := fs.String("run-mode", getenvDefault("SUNCODEXCLAW_LAUNCHAGENT_RUN_MODE", "node"), "run mode: node|supervisor")
@@ -1274,6 +2386,21 @@ func normalizeAccountsOrAll(in []string) []string {
 	return accts
 }
 
+func uniqueAccounts(values []string) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" || trimmed == "all" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		out = append(out, trimmed)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func parseAccounts(in []string) ([]string, bool) {
 	out := []string{}
 	all := false
@@ -1292,38 +2419,6 @@ func parseAccounts(in []string) ([]string, bool) {
 		return nil, true
 	}
 	return out, false
-}
-
-func normalizePositionalAccountArgs(args []string) []string {
-	// Accept `start all` / `stop assistant` style.
-	// If the first non-flag token exists, treat it as `--account <token>`.
-	if len(args) == 0 {
-		return args
-	}
-	if strings.HasPrefix(args[0], "-") {
-		return args
-	}
-	token := strings.TrimSpace(args[0])
-	if token == "" {
-		return args[1:]
-	}
-	// Insert as --account, keep remaining args.
-	out := []string{"--account", token}
-	out = append(out, args[1:]...)
-	return out
-}
-
-func normalizeLogsArgs(args []string) []string {
-	// Accept `logs <account> -f` alias.
-	out := []string{}
-	for _, a := range args {
-		if a == "-f" {
-			out = append(out, "--follow")
-			continue
-		}
-		out = append(out, a)
-	}
-	return normalizePositionalAccountArgs(out)
 }
 
 func normalizeForLogTail(selected []string, failed []string) []string {

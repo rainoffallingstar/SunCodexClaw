@@ -2,10 +2,8 @@ name: go-binaries
 
 on:
   push:
+    branches: ["main"]
     tags: ["v*"]
-  schedule:
-    # Daily build tag in Asia/Shanghai date (computed in workflow)
-    - cron: "0 2 * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -42,7 +40,7 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -fa "${TAG}" -m "daily build ${TAG}"
+          git tag -fa "${TAG}" -m "auto build ${TAG}"
           git push --force origin "refs/tags/${TAG}"
 
           echo "version=${TAG}" >> "${GITHUB_OUTPUT}"
@@ -52,7 +50,7 @@ jobs:
     name: build (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
     needs: [meta]
-    # Avoid duplicate builds: schedule/workflow_dispatch creates/updates the date tag (actor=github-actions[bot]),
+    # Avoid duplicate builds: branch push/workflow_dispatch may create/update the date tag (actor=github-actions[bot]),
     # which triggers a tag push event. Skip the tag-push run when it was created by the bot.
     if: github.event_name != 'push' || github.actor != 'github-actions[bot]'
     strategy:

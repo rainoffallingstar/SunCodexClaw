@@ -22,7 +22,7 @@ func TestStatusInfosShowsLaunchAgentFileOnlyAsLaunchctlStopped(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, "config", "feishu"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, "config", "feishu", "assistant.json"), []byte("{\"bot_name\":\"x\"}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "config", "feishu", "bots.toml"), []byte("[bot.assistant]\nbot_name = \"x\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

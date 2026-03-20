@@ -1,0 +1,50 @@
+# Shared non-secret runtime config.
+# File location: config/feishu/bots.toml
+# Per-bot values under [bot.<account>] override [shared] for that bot.
+
+[shared]
+domain = "feishu"
+reply_mode = "codex"
+reply_prefix = "AI 助手："
+require_mention = true
+require_mention_group_only = true
+ignore_self_messages = true
+auto_reply = true
+
+[shared.progress]
+enabled = true
+message = "已接收，正在执行。"
+mode = "doc"
+
+[shared.progress.doc]
+title_prefix = "AI 助手｜任务进度"
+share_to_chat = true
+link_scope = "same_tenant"
+include_user_message = true
+write_final_reply = true
+
+[shared.codex]
+bin = "codex"
+base_url = "https://api.openai.com/v1"
+model = ""
+reasoning_effort = ""
+profile = ""
+# Keep this relative so the same config works for both host-local and Docker Compose runs.
+cwd_root = "workspace"
+add_dirs = []
+timeout_sec = 0
+history_turns = 6
+system_prompt = "你是“飞书 Codex 助手”，通过飞书和用户交流。请直接回答用户问题，不要复述用户原话。"
+
+[shared.speech]
+enabled = true
+api_key = ""
+model = "gpt-4o-mini-transcribe"
+language = ""
+base_url = "https://api.openai.com/v1"
+ffmpeg_bin = ""
+
+[bot.assistant]
+enabled = true
+bot_name = "飞书 Codex 助手"
+bot_open_id = ""

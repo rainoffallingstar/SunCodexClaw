@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,7 +44,7 @@ func (e *AccountRunError) Error() string {
 
 type Options struct {
 	RepoRoot     string
-	ConfigDir    string // config/feishu
+	ConfigDir    string // config
 	RuntimeDir   string // .runtime/feishu
 	NodeBin      string // node
 	BotScriptRel string // tools/feishu_ws_bot.js
@@ -92,7 +91,7 @@ func New(opts Options) *Supervisor {
 		opts.DisableLaunchctl = getenvBool("SUNCODEXCLAW_DISABLE_LAUNCHCTL", false)
 	}
 	if strings.TrimSpace(opts.ConfigDir) == "" {
-		opts.ConfigDir = filepath.Join(opts.RepoRoot, "config", "feishu")
+		opts.ConfigDir = filepath.Join(opts.RepoRoot, "config")
 	}
 	if strings.TrimSpace(opts.RuntimeDir) == "" {
 		opts.RuntimeDir = filepath.Join(opts.RepoRoot, ".runtime", "feishu")
@@ -141,43 +140,13 @@ func (s *Supervisor) UsingLaunchctl() bool {
 }
 
 func (s *Supervisor) DiscoverAccounts() ([]string, error) {
-	names := map[string]bool{}
-
-	// config/feishu/*.json
-	entries, _ := os.ReadDir(s.opts.ConfigDir)
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		n := e.Name()
-		if !strings.HasSuffix(n, ".json") {
-			continue
-		}
-		base := strings.TrimSuffix(n, ".json")
-		if base == "default" || strings.HasSuffix(base, ".example") {
-			continue
-		}
-		names[base] = true
-	}
-
-	// local.yaml config.feishu.* and legacy values.feishu.*
 	store := configstore.NewStore(s.opts.RepoRoot)
-	secretNames, err := store.ListSecretsEntryNames("feishu")
-	if err == nil {
-		for _, n := range secretNames {
-			if n == "default" || strings.HasSuffix(n, ".example") {
-				continue
-			}
-			names[n] = true
-		}
-	}
+	return store.ListEnabledAccountNames()
+}
 
-	out := []string{}
-	for n := range names {
-		out = append(out, n)
-	}
-	sort.Strings(out)
-	return out, nil
+func (s *Supervisor) DiscoverAllAccounts() ([]string, error) {
+	store := configstore.NewStore(s.opts.RepoRoot)
+	return store.ListConfiguredAccountNames()
 }
 
 func (s *Supervisor) StartDetached(accounts []string) ([]string, error) {
@@ -192,7 +161,7 @@ func (s *Supervisor) StartDetached(accounts []string) ([]string, error) {
 		}
 	}
 	if len(accounts) == 0 {
-		return nil, fmt.Errorf("no accounts found under %s or local.yaml", s.opts.ConfigDir)
+		return nil, fmt.Errorf("no accounts found under %s or config/secrets/local.toml", s.opts.ConfigDir)
 	}
 	if err := os.MkdirAll(s.pidDir(), 0o755); err != nil {
 		return nil, err
@@ -225,7 +194,7 @@ func (s *Supervisor) StartAll(ctx context.Context, accounts []string) error {
 		}
 	}
 	if len(accounts) == 0 {
-		return fmt.Errorf("no accounts found under %s or local.yaml", s.opts.ConfigDir)
+		return fmt.Errorf("no accounts found under %s or config/secrets/local.toml", s.opts.ConfigDir)
 	}
 
 	if err := os.MkdirAll(s.pidDir(), 0o755); err != nil {
@@ -277,7 +246,7 @@ func (s *Supervisor) StartReport(accounts []string) ([]string, error) {
 		}
 	}
 	if len(accounts) == 0 {
-		return nil, fmt.Errorf("no accounts found under %s or local.yaml", s.opts.ConfigDir)
+		return nil, fmt.Errorf("no accounts found under %s or config/secrets/local.toml", s.opts.ConfigDir)
 	}
 	if err := os.MkdirAll(s.pidDir(), 0o755); err != nil {
 		return nil, err
@@ -294,7 +263,7 @@ func (s *Supervisor) StartReport(accounts []string) ([]string, error) {
 		if ok, err := s.configExistsForAccount(a); err != nil {
 			return nil, err
 		} else if !ok {
-			lines = append(lines, fmt.Sprintf("[error] missing config for %s: %s (and no local.yaml entry)", a, filepath.Join(s.opts.ConfigDir, a+".json")))
+			lines = append(lines, fmt.Sprintf("[error] missing config for %s: %s (and no config/secrets/local.toml entry)", a, configstore.NewStore(s.opts.RepoRoot).OverlayTargetLabel(a)))
 			continue
 		}
 
@@ -327,10 +296,16 @@ func (s *Supervisor) StartReport(accounts []string) ([]string, error) {
 }
 
 func (s *Supervisor) configExistsForAccount(account string) (bool, error) {
-	if _, err := os.Stat(filepath.Join(s.opts.ConfigDir, account+".json")); err == nil {
-		return true, nil
-	}
 	store := configstore.NewStore(s.opts.RepoRoot)
+	overlayNames, err := store.ListOverlayAccountNames()
+	if err != nil {
+		return false, err
+	}
+	for _, n := range overlayNames {
+		if n == account {
+			return true, nil
+		}
+	}
 	entry, err := store.ReadSecretsEntry("feishu", account)
 	if err != nil {
 		return false, err
