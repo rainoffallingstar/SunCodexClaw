@@ -273,7 +273,7 @@ suncodexclawd status --docker-compose
 suncodexclawd logs --docker-compose -f
 ```
 
-如果你要让 Compose 服务切到 Go native 后端，先把 `.env` 中的 `SUNCODEXCLAW_FEISHU_RUNTIME=go` 写好，再执行：
+如果你想显式切回 JS 兼容后端，把 `.env` 中的 `SUNCODEXCLAW_FEISHU_RUNTIME=js` 写好，再执行：
 
 ```bash
 suncodexclawd restart --docker-compose
@@ -283,7 +283,7 @@ suncodexclawd restart --docker-compose
 
 - `start/restart/status/stop/logs/preflight` 默认都按本机模式执行
 - `--runtime-backend go` 会切到 Go native 飞书运行时；`--runtime-backend js` 使用原有 JS 兼容运行时
-- 当前仍建议默认保留 `js` 作为最兼容后端；Go native 已支持 dry-run、工作区初始化、WebSocket 收消息、文本/文件/图片/语音消息处理、`post` 富文本里的嵌图读取、附件回传指令、`/timer` `/memory` `/sync` `/thread` 命令、多线程本地上下文、消息级进度提示、typing reaction、fake stream、`progress.mode=doc` 的飞书文档进度页，以及 timer 任务里的附件回传
+- 当前默认使用 `go` 后端；如果遇到兼容性问题，可显式切回 `js` 兼容后端。Go native 已支持 dry-run、工作区初始化、WebSocket 收消息、文本/文件/图片/语音消息处理、`post` 富文本里的嵌图读取、附件回传指令、`/timer` `/memory` `/sync` `/thread` 命令、多线程本地上下文、消息级进度提示、typing reaction、fake stream、`progress.mode=doc` 的飞书文档进度页，以及 timer 任务里的附件回传
 - Go native 的 `progress.mode=doc` 当前会创建文档、写入任务概览/用户消息/最终回复、尝试分享给当前会话并设置链接范围；更细颗粒度的事件流式进度仍以 JS backend 更完整
 - Go native 现已读取 `codex exec --json` 事件流，并把常见的 `thread/turn/item/command/raw/error` 事件写入消息进度或 doc 进度
 - 本机模式下，`start/preflight` 不带 `--account` 时，会处理 `bots.toml` 中所有 `enabled = true` 的机器人
@@ -333,7 +333,7 @@ WORKSPACE_PATH=./workspace
 HEALTH_PORT=8080
 SUNCODEXCLAW_UID=1000
 SUNCODEXCLAW_GID=1000
-SUNCODEXCLAW_FEISHU_RUNTIME=js
+SUNCODEXCLAW_FEISHU_RUNTIME=go
 # CODEX_NPM_PKG=@openai/codex
 ```
 

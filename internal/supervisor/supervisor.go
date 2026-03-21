@@ -366,9 +366,39 @@ func (s *Supervisor) preflightAccount(account string) error {
 		return nil
 	}
 	if err != nil {
+		if shouldIgnoreCodexBaseURLProbeError(result, err) {
+			wsURL := strings.TrimSpace(result.WSURL)
+			if wsURL == "" {
+				wsURL = "(none)"
+			}
+			message := strings.TrimSpace(result.Message)
+			if message == "" {
+				message = strings.TrimSpace(err.Error())
+			}
+			_, _ = fmt.Fprintf(os.Stderr, "[warn] %s codex_base_url_probe ignored: url=%s message=%s\n",
+				account,
+				wsURL,
+				message,
+			)
+			return nil
+		}
 		return fmt.Errorf("codex_base_url_probe=error url=%s message=%s", result.WSURL, result.Message)
 	}
 	return nil
+}
+
+func shouldIgnoreCodexBaseURLProbeError(result feishunative.CodexBaseURLProbeResult, err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(result.Message))
+	if message == "" {
+		message = strings.ToLower(strings.TrimSpace(err.Error()))
+	}
+	if !strings.Contains(message, "websocket: bad handshake") {
+		return false
+	}
+	return strings.Contains(message, "400 bad request") || strings.Contains(message, "405 method not allowed")
 }
 
 func (s *Supervisor) StatusInfos(accounts []string) ([]StatusInfo, error) {

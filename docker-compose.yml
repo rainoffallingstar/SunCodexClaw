@@ -19,8 +19,8 @@ services:
       SUNCODEXCLAW_NO_RESTART: "${SUNCODEXCLAW_NO_RESTART:-false}"
       SUNCODEXCLAW_MAX_RESTARTS: "${SUNCODEXCLAW_MAX_RESTARTS:-20}"
       SUNCODEXCLAW_RESTART_WINDOW: "${SUNCODEXCLAW_RESTART_WINDOW:-10m}"
-      # Runtime backend inside container: js | go
-      SUNCODEXCLAW_FEISHU_RUNTIME: "${SUNCODEXCLAW_FEISHU_RUNTIME:-js}"
+      # Runtime backend inside container: go | js
+      SUNCODEXCLAW_FEISHU_RUNTIME: "${SUNCODEXCLAW_FEISHU_RUNTIME:-go}"
       # Optional: override node binary
       # NODE_BIN: "node"
     ports:

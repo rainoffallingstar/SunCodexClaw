@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"suncodexclaw/internal/feishunative"
 )
 
 func TestStatusInfosShowsLastErrorWhenStopped(t *testing.T) {
@@ -230,5 +232,27 @@ func TestFormatSupervisorSpawnErrorLine(t *testing.T) {
 		if !strings.Contains(line, want) {
 			t.Fatalf("line %q missing %q", line, want)
 		}
+	}
+}
+
+func TestShouldIgnoreCodexBaseURLProbeErrorAllowsBadHandshake400(t *testing.T) {
+	result := feishunative.CodexBaseURLProbeResult{
+		Enabled: true,
+		WSURL:   "ws://example.com/v1/responses",
+		Message: "400 Bad Request body=Bad Request websocket: bad handshake",
+	}
+	if !shouldIgnoreCodexBaseURLProbeError(result, errors.New("codex responses websocket probe failed")) {
+		t.Fatalf("shouldIgnoreCodexBaseURLProbeError() = false, want true")
+	}
+}
+
+func TestShouldIgnoreCodexBaseURLProbeErrorKeepsOtherFailuresBlocking(t *testing.T) {
+	result := feishunative.CodexBaseURLProbeResult{
+		Enabled: true,
+		WSURL:   "ws://example.com/v1/responses",
+		Message: "dial tcp: lookup example.com: no such host",
+	}
+	if shouldIgnoreCodexBaseURLProbeError(result, errors.New("codex responses websocket probe failed")) {
+		t.Fatalf("shouldIgnoreCodexBaseURLProbeError() = true, want false")
 	}
 }
