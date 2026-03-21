@@ -16,7 +16,7 @@ ENV NODE_ENV=production
 ENV CODEX_HOME=/home/node/.codex
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends bash ca-certificates procps tini \
+  && apt-get install -y --no-install-recommends bash ca-certificates git procps tini \
   && rm -rf /var/lib/apt/lists/*
 
 # Install Codex CLI (package name can be overridden at build time)
