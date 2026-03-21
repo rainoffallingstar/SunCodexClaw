@@ -31,10 +31,6 @@ RUN mkdir -p /home/node/.codex \
   && touch /home/node/.codex/.keep \
   && chown -R node:node /home/node
 
-# Install only production deps first (better layer caching)
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
-
 # Copy the rest
 COPY . .
 

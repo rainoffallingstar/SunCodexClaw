@@ -18,7 +18,6 @@
 
 ## 你需要准备
 
-- Node.js 20+（仅当你使用兼容版 JS 运行时）
 - Go 1.22+（如果你要本地编译 `suncodexclawd`）
 - Docker / Docker Compose（仅当你要用容器部署时）
 - 一个飞书企业自建应用
@@ -247,7 +246,6 @@ suncodexclawd configure edit --account <account>
 
 ```bash
 suncodexclawd preflight --account <account>
-suncodexclawd preflight --account <account> --runtime-backend go
 ```
 
 容器模式：
@@ -262,7 +260,6 @@ suncodexclawd preflight --docker-compose --account <account>
 
 ```bash
 suncodexclawd start
-suncodexclawd start --runtime-backend go
 suncodexclawd logs --account <account> -f
 ```
 
@@ -274,18 +271,11 @@ suncodexclawd status --docker-compose
 suncodexclawd logs --docker-compose -f
 ```
 
-如果你想显式切回 JS 兼容后端，把 `.env` 中的 `SUNCODEXCLAW_FEISHU_RUNTIME=js` 写好，再执行：
-
-```bash
-suncodexclawd restart --docker-compose
-```
-
 说明：
 
 - `start/restart/status/stop/logs/preflight` 默认都按本机模式执行
-- `--runtime-backend go` 会切到 Go native 飞书运行时；`--runtime-backend js` 使用原有 JS 兼容运行时
-- 当前默认使用 `go` 后端；如果遇到兼容性问题，可显式切回 `js` 兼容后端。Go native 已支持 dry-run、工作区初始化、WebSocket 收消息、文本/文件/图片/语音消息处理、`post` 富文本里的嵌图读取、附件回传指令、`/timer` `/memory` `/sync` `/thread` 命令、多线程本地上下文、消息级进度提示、typing reaction、fake stream、`progress.mode=doc` 的飞书文档进度页，以及 timer 任务里的附件回传
-- Go native 的 `progress.mode=doc` 当前会创建文档、写入任务概览/用户消息/最终回复、尝试分享给当前会话并设置链接范围；更细颗粒度的事件流式进度仍以 JS backend 更完整
+- 当前只保留 Go native 飞书运行时。它已支持 dry-run、工作区初始化、WebSocket 收消息、文本/文件/图片/语音消息处理、`post` 富文本里的嵌图读取、附件回传指令、`/timer` `/memory` `/sync` `/thread` 命令、多线程本地上下文、消息级进度提示、typing reaction、fake stream、`progress.mode=doc` 的飞书文档进度页，以及 timer 任务里的附件回传
+- Go native 的 `progress.mode=doc` 会创建文档、写入任务概览/用户消息/最终回复、尝试分享给当前会话并设置链接范围
 - Go native 现已读取 `codex exec --json` 事件流，并把常见的 `thread/turn/item/command/raw/error` 事件写入消息进度或 doc 进度
 - 本机模式下，`start/preflight` 不带 `--account` 时，会处理 `bots.toml` 中所有 `enabled = true` 的机器人
 - 本机模式下，`status/stop` 不带 `--account` 时，会处理所有已配置机器人，便于发现或停止已经被禁用但仍有残留进程/日志状态的机器人
@@ -322,14 +312,14 @@ suncodexclawd restart --docker-compose
 - 仅在显式使用 `--docker-compose` 时启用
 - Compose 会挂载 `config/`、`.runtime/`、`workspace/`，并用独立的 Docker volume 保存容器内的 `CODEX_HOME`
 - 容器内执行 `suncodexclawd start` 时仍然按默认本机模式启动，不会再套一层 Docker
-- Compose 可通过 `.env` 中的 `SUNCODEXCLAW_FEISHU_RUNTIME=js|go` 选择容器内运行后端
 - 如果 `codex.base_url` 指向 Tailscale 网络里的另一台机器，优先使用该节点可路由的 Tailscale IP 或完整 MagicDNS 名称；不要依赖 `localhost`、`host.docker.internal`，也尽量不要只写未限定域名的短主机名
 - 仅“地址可达”还不够。Codex CLI 会把 `codex.base_url` 当作 Responses API 入口，并要求目标在 `/v1/responses` 支持 WebSocket 握手；如果网关只兼容普通 HTTP/OpenAI 接口，通常会报 `400 Bad Request websocket: bad handshake`
 - 因此，`speech.base_url` 可以指向普通 HTTP 兼容网关，但 `codex.base_url` 必须指向官方 OpenAI，或你自己部署的、明确支持 Responses WebSocket 的网关
 - 现在默认不再把宿主机仓库下的 `./.codex` 绑进容器；容器会使用自己持久化的 `CODEX_HOME` volume。如果要让 Compose 容器复用某一份现成 Codex 配置，需要手动把对应配置写入这个 volume 内
-- 容器启动时现在会默认尝试执行 `suncodexclawd codex-home sync`：如果所有启用账号解析出的 `codex.base_url` / `codex.api_key` 一致，就把它们写成容器内 `CODEX_HOME` 的 `config.toml` 与 `auth.json`，作为给 Codex CLI 读取的补充配置来源
+- 容器启动时现在会默认尝试执行 `suncodexclawd codex-home sync`：会为每个启用 bot 生成独立的 `HOME` 与 `CODEX_HOME`，并把各自的 `codex.base_url` / `codex.api_key` 写入对应目录下的 `config.toml` 与 `auth.json`
+- 当前默认目录形如 `CODEX_HOME_ROOT/bot-homes/<account-namespace>/.codex`；运行时会为每个 bot 注入对应的 `HOME` / `CODEX_HOME`，不需要创建真实系统用户
 - 这一步只是减少对环境变量注入的依赖，不能绕过 Codex CLI 仍要求 `/v1/responses` WebSocket 的限制
-- 如果多个启用账号的 Codex 连接配置不一致，或 `CODEX_HOME` 里已经有不是 SunCodexClaw 托管的 `config.toml` / `auth.json`，同步会自动跳过并继续使用现有环境变量路径
+- 如果某个 bot 自己的 `CODEX_HOME` 里已经有不是 SunCodexClaw 托管的 `config.toml` / `auth.json`，该 bot 的同步会自动跳过并继续使用现有环境变量路径
 - 如需关闭这一步，可在 `.env` 里设置 `SUNCODEXCLAW_SYNC_CODEX_HOME=false`
 - 如果你之前已经创建过 `codex_home` volume，重建镜像后仍遇到 `Permission denied (os error 13)`，删除旧 volume 后再 `docker compose up -d --build`，让新 volume 继承镜像里预设的 `/home/node/.codex` 权限
 - 默认会把宿主机的 `WORKSPACE_PATH` 挂到容器内 `/app/workspace`，因此推荐把 `shared.codex.cwd_root` 配成相对路径 `workspace`
@@ -343,7 +333,6 @@ WORKSPACE_PATH=./workspace
 HEALTH_PORT=8080
 SUNCODEXCLAW_UID=1000
 SUNCODEXCLAW_GID=1000
-SUNCODEXCLAW_FEISHU_RUNTIME=go
 SUNCODEXCLAW_SYNC_CODEX_HOME=true
 # CODEX_NPM_PKG=@openai/codex
 ```
@@ -718,7 +707,4 @@ docker pull ghcr.io/rainoffallingstar/suncodexclaw:main
 
 ## 兼容脚本
 
-这些脚本仍然保留，但不推荐新部署继续依赖：
-
-- `tools/feishu_bot_ctl.sh`
-- `tools/install_feishu_launchagents.sh`（仅 macOS，本机模式）
+- `tools/install_feishu_launchagents.sh` 仍保留为兼容包装脚本（仅 macOS，本机模式）

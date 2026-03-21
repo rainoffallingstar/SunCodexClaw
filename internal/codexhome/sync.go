@@ -6,15 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
+	"suncodexclaw/internal/codexenv"
 	"suncodexclaw/internal/configstore"
 	"suncodexclaw/internal/feishunative"
 )
-
-const managedMetadataFilename = "suncodexclaw-managed.json"
 
 type Options struct {
 	RepoRoot  string
@@ -24,14 +22,22 @@ type Options struct {
 }
 
 type Result struct {
-	Status     string
-	Message    string
-	CodexHome  string
-	Accounts   []string
-	Config     codexConnectionConfig
-	ConfigPath string
-	AuthPath   string
+	Status   string
+	Message  string
+	Root     string
+	Accounts []string
+	Results  []AccountResult
 }
+
+type AccountResult struct {
+	Account string
+	Status  string
+	Message string
+	Paths   AccountPaths
+	Config  codexConnectionConfig
+}
+
+type AccountPaths = codexenv.AccountPaths
 
 type codexConnectionConfig struct {
 	BaseURL string `json:"base_url,omitempty"`
@@ -39,11 +45,11 @@ type codexConnectionConfig struct {
 }
 
 type managedMetadata struct {
-	ManagedBy    string   `json:"managed_by"`
-	Version      int      `json:"version"`
-	Accounts     []string `json:"accounts,omitempty"`
-	BaseURL      string   `json:"base_url,omitempty"`
-	APIKeySHA256 string   `json:"api_key_sha256,omitempty"`
+	ManagedBy    string `json:"managed_by"`
+	Version      int    `json:"version"`
+	Account      string `json:"account,omitempty"`
+	BaseURL      string `json:"base_url,omitempty"`
+	APIKeySHA256 string `json:"api_key_sha256,omitempty"`
 }
 
 func Sync(opts Options) (Result, error) {
@@ -51,118 +57,153 @@ func Sync(opts Options) (Result, error) {
 	if repoRoot == "" {
 		repoRoot = "."
 	}
-	codexHome, err := resolveCodexHome(opts.CodexHome)
+	root, err := resolveCodexHomeRoot(opts.CodexHome)
 	if err != nil {
 		return Result{}, err
 	}
 	accounts, err := resolveAccounts(repoRoot, opts.Accounts)
 	if err != nil {
-		return Result{Status: "error", CodexHome: codexHome}, err
+		return Result{Status: "error", Root: root}, err
 	}
 	if len(accounts) == 0 {
 		return Result{
-			Status:    "skip",
-			Message:   "no_enabled_accounts",
-			CodexHome: codexHome,
-		}, nil
-	}
-	cfg, err := resolveSharedCodexConnection(repoRoot, accounts)
-	if err != nil {
-		return Result{
-			Status:    "skip",
-			Message:   err.Error(),
-			CodexHome: codexHome,
-			Accounts:  append([]string(nil), accounts...),
-		}, nil
-	}
-	if strings.TrimSpace(cfg.BaseURL) == "" && strings.TrimSpace(cfg.APIKey) == "" {
-		return Result{
-			Status:    "skip",
-			Message:   "no_codex_base_url_or_api_key",
-			CodexHome: codexHome,
-			Accounts:  append([]string(nil), accounts...),
+			Status:  "skip",
+			Message: "no_enabled_accounts",
+			Root:    root,
 		}, nil
 	}
 
-	if err := os.MkdirAll(codexHome, 0o755); err != nil {
-		return Result{}, err
-	}
-	configPath := filepath.Join(codexHome, "config.toml")
-	authPath := filepath.Join(codexHome, "auth.json")
-	metadataPath := filepath.Join(codexHome, managedMetadataFilename)
-	if !opts.Force {
-		if shouldSkipManagedWrite(configPath, authPath, metadataPath) {
+	results := make([]AccountResult, 0, len(accounts))
+	okCount := 0
+	skipCount := 0
+	for _, account := range accounts {
+		item, syncErr := syncAccount(repoRoot, root, account, opts.Force)
+		if syncErr != nil {
 			return Result{
-				Status:     "skip",
-				Message:    "existing_unmanaged_codex_home_files",
-				CodexHome:  codexHome,
-				Accounts:   append([]string(nil), accounts...),
-				Config:     cfg,
-				ConfigPath: configPath,
-				AuthPath:   authPath,
-			}, nil
+				Status:   "error",
+				Message:  syncErr.Error(),
+				Root:     root,
+				Accounts: append([]string(nil), accounts...),
+				Results:  append(results, item),
+			}, syncErr
+		}
+		results = append(results, item)
+		switch item.Status {
+		case "ok":
+			okCount++
+		case "skip":
+			skipCount++
 		}
 	}
 
-	if strings.TrimSpace(cfg.BaseURL) != "" {
-		if err := writeFileAtomically(configPath, []byte(renderConfigTOML(cfg.BaseURL)), 0o600); err != nil {
-			return Result{}, err
+	status := "skip"
+	message := "all_skipped"
+	if okCount > 0 {
+		status = "ok"
+		if skipCount > 0 {
+			message = "partial_sync"
+		} else {
+			message = "synced"
 		}
-	} else if err := removeIfExists(configPath); err != nil {
-		return Result{}, err
 	}
-	if strings.TrimSpace(cfg.APIKey) != "" {
-		authBody, err := json.MarshalIndent(map[string]string{
-			"OPENAI_API_KEY": cfg.APIKey,
-		}, "", "  ")
-		if err != nil {
-			return Result{}, err
-		}
-		authBody = append(authBody, '\n')
-		if err := writeFileAtomically(authPath, authBody, 0o600); err != nil {
-			return Result{}, err
-		}
-	} else if err := removeIfExists(authPath); err != nil {
-		return Result{}, err
-	}
-	metadataBody, err := json.MarshalIndent(managedMetadata{
-		ManagedBy:    "suncodexclaw",
-		Version:      1,
-		Accounts:     append([]string(nil), accounts...),
-		BaseURL:      strings.TrimSpace(cfg.BaseURL),
-		APIKeySHA256: hashAPIKey(cfg.APIKey),
-	}, "", "  ")
-	if err != nil {
-		return Result{}, err
-	}
-	metadataBody = append(metadataBody, '\n')
-	if err := writeFileAtomically(metadataPath, metadataBody, 0o600); err != nil {
-		return Result{}, err
-	}
-
 	return Result{
-		Status:     "ok",
-		Message:    "synced",
-		CodexHome:  codexHome,
-		Accounts:   append([]string(nil), accounts...),
-		Config:     cfg,
-		ConfigPath: configPath,
-		AuthPath:   authPath,
+		Status:   status,
+		Message:  message,
+		Root:     root,
+		Accounts: append([]string(nil), accounts...),
+		Results:  results,
 	}, nil
 }
 
-func resolveCodexHome(raw string) (string, error) {
-	if strings.TrimSpace(raw) != "" {
-		return filepath.Abs(strings.TrimSpace(raw))
+func syncAccount(repoRoot, root, account string, force bool) (AccountResult, error) {
+	paths, err := codexenv.ResolveAccountPaths(root, account)
+	if err != nil {
+		return AccountResult{Account: strings.TrimSpace(account), Status: "error"}, err
 	}
-	if env := strings.TrimSpace(os.Getenv("CODEX_HOME")); env != "" {
-		return filepath.Abs(env)
+	cfg, err := feishunative.Load(repoRoot, account)
+	if err != nil {
+		return AccountResult{Account: account, Status: "error", Paths: paths}, err
 	}
-	home, err := os.UserHomeDir()
+	connection := codexConnectionConfig{
+		BaseURL: strings.TrimSpace(cfg.Codex.BaseURL),
+		APIKey:  strings.TrimSpace(cfg.Codex.APIKey),
+	}
+	if strings.TrimSpace(connection.BaseURL) == "" && strings.TrimSpace(connection.APIKey) == "" {
+		return AccountResult{
+			Account: account,
+			Status:  "skip",
+			Message: "no_codex_base_url_or_api_key",
+			Paths:   paths,
+			Config:  connection,
+		}, nil
+	}
+
+	if err := os.MkdirAll(paths.CodexHome, 0o755); err != nil {
+		return AccountResult{Account: account, Status: "error", Paths: paths}, err
+	}
+	if !force && shouldSkipManagedWrite(paths.ConfigPath, paths.AuthPath, paths.MetadataPath) {
+		return AccountResult{
+			Account: account,
+			Status:  "skip",
+			Message: "existing_unmanaged_codex_home_files",
+			Paths:   paths,
+			Config:  connection,
+		}, nil
+	}
+
+	if strings.TrimSpace(connection.BaseURL) != "" {
+		if err := writeFileAtomically(paths.ConfigPath, []byte(renderConfigTOML(connection.BaseURL)), 0o600); err != nil {
+			return AccountResult{Account: account, Status: "error", Paths: paths, Config: connection}, err
+		}
+	} else if err := removeIfExists(paths.ConfigPath); err != nil {
+		return AccountResult{Account: account, Status: "error", Paths: paths, Config: connection}, err
+	}
+
+	if strings.TrimSpace(connection.APIKey) != "" {
+		authBody, err := json.MarshalIndent(map[string]string{
+			"OPENAI_API_KEY": connection.APIKey,
+		}, "", "  ")
+		if err != nil {
+			return AccountResult{Account: account, Status: "error", Paths: paths, Config: connection}, err
+		}
+		authBody = append(authBody, '\n')
+		if err := writeFileAtomically(paths.AuthPath, authBody, 0o600); err != nil {
+			return AccountResult{Account: account, Status: "error", Paths: paths, Config: connection}, err
+		}
+	} else if err := removeIfExists(paths.AuthPath); err != nil {
+		return AccountResult{Account: account, Status: "error", Paths: paths, Config: connection}, err
+	}
+
+	metadataBody, err := json.MarshalIndent(managedMetadata{
+		ManagedBy:    "suncodexclaw",
+		Version:      1,
+		Account:      account,
+		BaseURL:      connection.BaseURL,
+		APIKeySHA256: hashAPIKey(connection.APIKey),
+	}, "", "  ")
+	if err != nil {
+		return AccountResult{Account: account, Status: "error", Paths: paths, Config: connection}, err
+	}
+	metadataBody = append(metadataBody, '\n')
+	if err := writeFileAtomically(paths.MetadataPath, metadataBody, 0o600); err != nil {
+		return AccountResult{Account: account, Status: "error", Paths: paths, Config: connection}, err
+	}
+
+	return AccountResult{
+		Account: account,
+		Status:  "ok",
+		Message: "synced",
+		Paths:   paths,
+		Config:  connection,
+	}, nil
+}
+
+func resolveCodexHomeRoot(raw string) (string, error) {
+	paths, err := codexenv.ResolveAccountPaths(raw, "default")
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".codex"), nil
+	return paths.Root, nil
 }
 
 func resolveAccounts(repoRoot string, requested []string) ([]string, error) {
@@ -182,32 +223,6 @@ func resolveAccounts(repoRoot string, requested []string) ([]string, error) {
 	}
 	store := configstore.NewStore(repoRoot)
 	return store.ListEnabledAccountNames()
-}
-
-func resolveSharedCodexConnection(repoRoot string, accounts []string) (codexConnectionConfig, error) {
-	var resolved *codexConnectionConfig
-	for _, account := range accounts {
-		cfg, err := feishunative.Load(repoRoot, account)
-		if err != nil {
-			return codexConnectionConfig{}, err
-		}
-		current := codexConnectionConfig{
-			BaseURL: strings.TrimSpace(cfg.Codex.BaseURL),
-			APIKey:  strings.TrimSpace(cfg.Codex.APIKey),
-		}
-		if resolved == nil {
-			copyValue := current
-			resolved = &copyValue
-			continue
-		}
-		if resolved.BaseURL != current.BaseURL || resolved.APIKey != current.APIKey {
-			return codexConnectionConfig{}, fmt.Errorf("account_codex_config_conflict")
-		}
-	}
-	if resolved == nil {
-		return codexConnectionConfig{}, nil
-	}
-	return *resolved, nil
 }
 
 func shouldSkipManagedWrite(configPath, authPath, metadataPath string) bool {

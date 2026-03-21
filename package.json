@@ -1,7 +1,7 @@
 {
   "name": "suncodexclaw",
   "version": "1.0.0",
-  "description": "Feishu Codex assistant with WebSocket bot runtime, image and voice ingestion, cloud-doc progress logs, and local attachment sending.",
+  "description": "Feishu Codex assistant with Go native runtime, progress logs, and local attachment sending.",
   "private": true,
   "type": "commonjs",
   "scripts": {
@@ -14,9 +14,5 @@
     "feishu:status": "./bin/suncodexclawd status",
     "feishu:install-launchagents": "./bin/suncodexclawd launchagents install",
     "feishu:launchagents:status": "./bin/suncodexclawd launchagents status"
-  },
-  "dependencies": {
-    "@larksuiteoapi/node-sdk": "^1.59.0",
-    "ffmpeg-static": "^5.3.0"
   }
 }

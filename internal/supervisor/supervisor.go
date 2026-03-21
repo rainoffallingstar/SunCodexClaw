@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"suncodexclaw/internal/codexenv"
 	"suncodexclaw/internal/configstore"
 	"suncodexclaw/internal/feishunative"
 )
@@ -48,8 +49,7 @@ type Options struct {
 	ConfigDir      string // config
 	RuntimeDir     string // .runtime/feishu
 	NodeBin        string // node
-	RuntimeBackend string // js|go
-	BotScriptRel   string // tools/feishu_ws_bot.js
+	RuntimeBackend string // go
 	// macOS launchctl (when available)
 	LaunchctlPrefix  string // label prefix; default com.sunbelife.suncodexclaw.feishu
 	DisableLaunchctl bool   // force pidfile/manual mode on macOS
@@ -84,9 +84,6 @@ func New(opts Options) *Supervisor {
 		opts.NodeBin = "node"
 	}
 	opts.RuntimeBackend = normalizeRuntimeBackend(opts.RuntimeBackend)
-	if strings.TrimSpace(opts.BotScriptRel) == "" {
-		opts.BotScriptRel = filepath.Join("tools", "feishu_ws_bot.js")
-	}
 	if strings.TrimSpace(opts.LaunchctlPrefix) == "" {
 		opts.LaunchctlPrefix = getenvDefault("SUNCODEXCLAW_LAUNCHCTL_PREFIX", "com.sunbelife.suncodexclaw.feishu")
 	}
@@ -343,7 +340,6 @@ func (s *Supervisor) preflightAccount(account string) error {
 		return err
 	}
 	cmd.Dir = s.opts.RepoRoot
-	cmd.Env = os.Environ()
 	// Keep output small; errors bubble up.
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -882,22 +878,14 @@ func (s *Supervisor) adoptExisting(ctx context.Context, account string) (bool, e
 
 func (s *Supervisor) findRunningBotPID(account string) (int, error) {
 	// Try to detect a manually started bot process via ps output.
-	// Match either the JS runtime or the internal Go runtime for the target account.
-	scriptName := filepath.Base(s.opts.BotScriptRel)
-	repoScript := filepath.Join(s.opts.RepoRoot, s.opts.BotScriptRel)
-	repoScriptSlash := filepath.ToSlash(repoScript)
-	repoRelSlash := filepath.ToSlash(s.opts.BotScriptRel)
+	// Match the internal Go runtime for the target account.
 	exeName := executableName()
 	re := regexp.MustCompile(
 		`(` +
-			regexp.QuoteMeta(repoScriptSlash) + `|` +
-			regexp.QuoteMeta(repoRelSlash) + `|` +
-			regexp.QuoteMeta(scriptName) + `|` +
 			regexp.QuoteMeta(exeName) +
 			`)` +
 			`.*(` +
-			`feishu-run|` +
-			regexp.QuoteMeta(scriptName) +
+			`feishu-run` +
 			`)?(\s|")*--account\s+` + regexp.QuoteMeta(account) + `(\s|$)`,
 	)
 
@@ -943,7 +931,6 @@ func (s *Supervisor) spawnOnce(ctx context.Context, account string) (int, error)
 		return 1, err
 	}
 	cmd.Dir = s.opts.RepoRoot
-	cmd.Env = os.Environ()
 	configureChildProcess(cmd)
 
 	// Tee output to file and also to supervisor stdout with account prefix.
@@ -1123,44 +1110,31 @@ func followFile(path string, n int) error {
 }
 
 func (s *Supervisor) runtimeCommand(ctx context.Context, account string, dryRun bool, timerTaskFile string) (*exec.Cmd, error) {
-	if normalizeRuntimeBackend(s.opts.RuntimeBackend) == "go" {
-		exe, err := os.Executable()
-		if err != nil {
-			return nil, err
-		}
-		args := []string{"feishu-run", "--repo", s.opts.RepoRoot, "--account", account}
-		if dryRun {
-			args = append(args, "--dry-run")
-		}
-		if strings.TrimSpace(timerTaskFile) != "" {
-			args = append(args, "--timer-task-file", strings.TrimSpace(timerTaskFile))
-		}
-		if ctx != nil {
-			return exec.CommandContext(ctx, exe, args...), nil
-		}
-		return exec.Command(exe, args...), nil
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
 	}
-	script := filepath.Join(s.opts.RepoRoot, s.opts.BotScriptRel)
-	args := []string{script, "--account", account}
+	args := []string{"feishu-run", "--repo", s.opts.RepoRoot, "--account", account}
 	if dryRun {
 		args = append(args, "--dry-run")
 	}
 	if strings.TrimSpace(timerTaskFile) != "" {
 		args = append(args, "--timer-task-file", strings.TrimSpace(timerTaskFile))
 	}
+	cmd := (*exec.Cmd)(nil)
 	if ctx != nil {
-		return exec.CommandContext(ctx, s.opts.NodeBin, args...), nil
+		cmd = exec.CommandContext(ctx, exe, args...)
+	} else {
+		cmd = exec.Command(exe, args...)
 	}
-	return exec.Command(s.opts.NodeBin, args...), nil
+	if env, _, err := codexenv.AppendAccountEnv(os.Environ(), account); err == nil {
+		cmd.Env = env
+	}
+	return cmd, nil
 }
 
 func normalizeRuntimeBackend(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "go", "native":
-		return "go"
-	default:
-		return "js"
-	}
+	return "go"
 }
 
 func formatSupervisorStartingLine(ts time.Time, account, runtimeBackend string) string {
@@ -1168,7 +1142,7 @@ func formatSupervisorStartingLine(ts time.Time, account, runtimeBackend string) 
 		"[%s] supervisor_starting account=%s runtime_backend=%s\n",
 		ts.Format("2006-01-02 15:04:05"),
 		emptySupervisorFallback(account, "(unknown)"),
-		emptySupervisorFallback(runtimeBackend, "js"),
+		emptySupervisorFallback(runtimeBackend, "go"),
 	)
 }
 
@@ -1177,7 +1151,7 @@ func formatSupervisorSpawnedLine(ts time.Time, account, runtimeBackend string, p
 		"[%s] supervisor_spawned account=%s runtime_backend=%s pid=%d cmd=%s\n",
 		ts.Format("2006-01-02 15:04:05"),
 		emptySupervisorFallback(account, "(unknown)"),
-		emptySupervisorFallback(runtimeBackend, "js"),
+		emptySupervisorFallback(runtimeBackend, "go"),
 		pid,
 		compactSupervisorLog(strings.Join(args, " "), 240),
 	)
@@ -1188,7 +1162,7 @@ func formatSupervisorAdoptLine(ts time.Time, account, runtimeBackend string, pid
 		"[%s] supervisor_adopted account=%s runtime_backend=%s pid=%d\n",
 		ts.Format("2006-01-02 15:04:05"),
 		emptySupervisorFallback(account, "(unknown)"),
-		emptySupervisorFallback(runtimeBackend, "js"),
+		emptySupervisorFallback(runtimeBackend, "go"),
 		pid,
 	)
 }
@@ -1198,7 +1172,7 @@ func formatSupervisorAdoptedExitLine(ts time.Time, account, runtimeBackend strin
 		"[%s] supervisor_adopted_exit account=%s runtime_backend=%s pid=%d\n",
 		ts.Format("2006-01-02 15:04:05"),
 		emptySupervisorFallback(account, "(unknown)"),
-		emptySupervisorFallback(runtimeBackend, "js"),
+		emptySupervisorFallback(runtimeBackend, "go"),
 		pid,
 	)
 }
@@ -1208,7 +1182,7 @@ func formatSupervisorSpawnErrorLine(ts time.Time, account, runtimeBackend string
 		"[%s] supervisor_spawn_error account=%s runtime_backend=%s error=%s retry_in=%s\n",
 		ts.Format("2006-01-02 15:04:05"),
 		emptySupervisorFallback(account, "(unknown)"),
-		emptySupervisorFallback(runtimeBackend, "js"),
+		emptySupervisorFallback(runtimeBackend, "go"),
 		compactSupervisorLog(errorString(err), 240),
 		backoff,
 	)
@@ -1219,7 +1193,7 @@ func formatSupervisorRestartLimitLine(ts time.Time, account, runtimeBackend stri
 		"[%s] supervisor_restart_limit account=%s runtime_backend=%s restarts=%d window=%s\n",
 		ts.Format("2006-01-02 15:04:05"),
 		emptySupervisorFallback(account, "(unknown)"),
-		emptySupervisorFallback(runtimeBackend, "js"),
+		emptySupervisorFallback(runtimeBackend, "go"),
 		restarts,
 		window,
 	)
@@ -1230,7 +1204,7 @@ func formatSupervisorExitLine(ts time.Time, account, runtimeBackend string, code
 		"[%s] supervisor_exit account=%s runtime_backend=%s exit_code=%d auto_restart=%t",
 		ts.Format("2006-01-02 15:04:05"),
 		emptySupervisorFallback(account, "(unknown)"),
-		emptySupervisorFallback(runtimeBackend, "js"),
+		emptySupervisorFallback(runtimeBackend, "go"),
 		code,
 		autoRestart,
 	)

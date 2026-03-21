@@ -12,13 +12,17 @@ import (
 func TestWritePlistNodeMode(t *testing.T) {
 	tmp := t.TempDir()
 	repo := filepath.Join(tmp, "repo")
-	if err := os.MkdirAll(filepath.Join(repo, "tools"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(repo, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(repo, ".runtime", "feishu", "logs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	sup := New(Options{RepoRoot: repo, BotScriptRel: filepath.Join("tools", "feishu_ws_bot.js"), RuntimeDir: filepath.Join(repo, ".runtime", "feishu")})
+	daemon := filepath.Join(repo, "bin", "suncodexclawd")
+	if err := os.WriteFile(daemon, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sup := New(Options{RepoRoot: repo, RuntimeDir: filepath.Join(repo, ".runtime", "feishu")})
 	sup.userHomeDir = func() (string, error) { return filepath.Join(tmp, "home"), nil }
 
 	plistPath, err := sup.writePlist("assistant", LaunchAgentOptions{RunMode: "node", KeepAlive: true, ThrottleInterval: 10})
@@ -30,8 +34,8 @@ func TestWritePlistNodeMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	txt := string(b)
-	if !strings.Contains(txt, "feishu_ws_bot.js") {
-		t.Fatalf("expected node bot script in plist: %s", plistPath)
+	if !strings.Contains(txt, "feishu-run") {
+		t.Fatalf("expected feishu-run in plist: %s", plistPath)
 	}
 	if !strings.Contains(txt, "<key>ThrottleInterval</key>") {
 		t.Fatalf("expected throttle interval in plist")

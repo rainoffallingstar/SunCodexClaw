@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"suncodexclaw/internal/codexenv"
 )
 
 var taskIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -717,7 +719,7 @@ func formatTimerTaskStartLine(now time.Time, task Task, scheduledFor time.Time, 
 		taskAction(task),
 		emptyFallback(strings.TrimSpace(task.Account), "(none)"),
 		emptyFallback(strings.TrimSpace(task.StorageAccount), "global"),
-		emptyFallback(strings.TrimSpace(runtimeBackend), "js"),
+		emptyFallback(strings.TrimSpace(runtimeBackend), "go"),
 		scheduledFor.UTC().Format(time.RFC3339),
 		emptyFallback(strings.TrimSpace(task.ChatID), "(none)"),
 	)
@@ -803,21 +805,17 @@ func (m *Manager) executeTask(ctx context.Context, task Task, logFile *os.File) 
 }
 
 func (m *Manager) runtimeCommand(ctx context.Context, account, timerTaskFile string) (*exec.Cmd, error) {
-	if normalizeRuntimeBackend(m.opts.RuntimeBackend) == "go" {
-		exe, err := os.Executable()
-		if err != nil {
-			return nil, err
-		}
-		return exec.CommandContext(ctx, exe, "feishu-run", "--repo", m.opts.RepoRoot, "--account", account, "--timer-task-file", timerTaskFile), nil
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
 	}
-	return exec.CommandContext(ctx, m.opts.NodeBin, filepath.Join(m.opts.RepoRoot, "tools", "feishu_ws_bot.js"), "--account", account, "--timer-task-file", timerTaskFile), nil
+	cmd := exec.CommandContext(ctx, exe, "feishu-run", "--repo", m.opts.RepoRoot, "--account", account, "--timer-task-file", timerTaskFile)
+	if env, _, err := codexenv.AppendAccountEnv(os.Environ(), account); err == nil {
+		cmd.Env = env
+	}
+	return cmd, nil
 }
 
 func normalizeRuntimeBackend(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "go", "native":
-		return "go"
-	default:
-		return "js"
-	}
+	return "go"
 }

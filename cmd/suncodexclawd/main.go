@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"suncodexclaw/internal/codexenv"
 	"suncodexclaw/internal/codexhome"
 	"suncodexclaw/internal/configstore"
 	"suncodexclaw/internal/feishunative"
@@ -74,18 +75,18 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd start [--account a] [--account b] [--repo .] [--node-bin node] [--runtime-backend js|go] [--no-launchctl] [--once] [--no-restart] [--max-restarts 20] [--restart-window 10m] [--strict-start] [--start-check-delay 1s]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd start [--account a] [--account b] [--repo .] [--node-bin node] [--no-launchctl] [--once] [--no-restart] [--max-restarts 20] [--restart-window 10m] [--strict-start] [--start-check-delay 1s]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd start --docker-compose [--repo .]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd stop [--account a] [--account b] [--repo .] [--no-launchctl]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd stop --docker-compose [--repo .]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd restart [--account a] [--account b] [--repo .] [--node-bin node] [--runtime-backend js|go] [--no-launchctl] [--strict-start] [--start-check-delay 1s]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd restart [--account a] [--account b] [--repo .] [--node-bin node] [--no-launchctl] [--strict-start] [--start-check-delay 1s]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd restart --docker-compose [--repo .]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd status [--account a] [--account b] [--repo .] [--no-launchctl]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd status --docker-compose [--repo .]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd list [--docker-compose] [--account a] [--account b]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd logs --account a [--account b|--account all] [--repo .] [--follow|-f] [--lines 120] [--no-launchctl]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd logs --docker-compose [--repo .] [--follow|-f] [--lines 120]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd preflight [--account a] [--account b] [--repo .] [--node-bin node] [--runtime-backend js|go] [--no-launchctl]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd preflight [--account a] [--account b] [--repo .] [--node-bin node] [--no-launchctl]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd preflight --docker-compose [--account a] [--account b] [--repo .]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd timer <start|list|show|upsert|update|logs|run|enable|disable|delete>")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd memory <add|list|show|search|delete>")
@@ -117,7 +118,7 @@ func baseFlags(name string) (*flag.FlagSet, *multiFlag, *string, *string, *strin
 	fs.Var(&accounts, "account", "account name (repeatable); default set depends on subcommand")
 	nodeBin := fs.String("node-bin", getenvDefault("NODE_BIN", "node"), "node binary")
 	repo := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
-	runtimeBackend := fs.String("runtime-backend", normalizeRuntimeBackend(getenvDefault("SUNCODEXCLAW_FEISHU_RUNTIME", "go")), "feishu runtime backend: js | go")
+	runtimeBackend := fs.String("runtime-backend", normalizeRuntimeBackend(getenvDefault("SUNCODEXCLAW_FEISHU_RUNTIME", "go")), "deprecated; Go native runtime is always used")
 	return fs, &accounts, nodeBin, repo, runtimeBackend
 }
 
@@ -215,7 +216,7 @@ func start(args []string) {
 		os.Exit(1)
 	}
 
-	// macOS: prefer detached launchctl jobs (parity with tools/feishu_bot_ctl.sh).
+	// macOS: prefer detached launchctl jobs for long-running local bots.
 	if sup.UsingLaunchctl() {
 		startLines, err := sup.StartDetached(accts)
 		if err != nil {
@@ -741,6 +742,10 @@ func feishuRun(args []string) {
 		fmt.Fprintln(os.Stderr, "error: feishu-run requires --account <account>")
 		os.Exit(2)
 	}
+	if _, err := codexenv.SetProcessAccountEnv(strings.TrimSpace(*account)); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
 	if err := feishunative.Run(context.Background(), feishunative.RunOptions{
 		RepoRoot:      repo,
 		Account:       strings.TrimSpace(*account),
@@ -755,40 +760,28 @@ func feishuRun(args []string) {
 }
 
 func normalizeRuntimeBackend(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", "js", "node":
-		return "js"
-	case "go", "native":
-		return "go"
-	default:
-		return "js"
-	}
+	return "go"
 }
 
 func buildRuntimeCommand(repo, nodeBin, runtimeBackend, account string, dryRun bool, timerTaskFile string) *exec.Cmd {
-	backend := normalizeRuntimeBackend(runtimeBackend)
-	if backend == "go" {
-		exe, err := os.Executable()
-		if err != nil {
-			exe = filepath.Join(repo, "bin", executableNameForRuntime())
-		}
-		args := []string{"feishu-run", "--repo", repo, "--account", account}
-		if dryRun {
-			args = append(args, "--dry-run")
-		}
-		if strings.TrimSpace(timerTaskFile) != "" {
-			args = append(args, "--timer-task-file", strings.TrimSpace(timerTaskFile))
-		}
-		return exec.Command(exe, args...)
+	_ = nodeBin
+	_ = runtimeBackend
+	exe, err := os.Executable()
+	if err != nil {
+		exe = filepath.Join(repo, "bin", executableNameForRuntime())
 	}
-	args := []string{filepath.Join(repo, "tools", "feishu_ws_bot.js"), "--account", account}
+	args := []string{"feishu-run", "--repo", repo, "--account", account}
 	if dryRun {
 		args = append(args, "--dry-run")
 	}
 	if strings.TrimSpace(timerTaskFile) != "" {
 		args = append(args, "--timer-task-file", strings.TrimSpace(timerTaskFile))
 	}
-	return exec.Command(nodeBin, args...)
+	cmd := exec.Command(exe, args...)
+	if env, _, err := codexenv.AppendAccountEnv(os.Environ(), account); err == nil {
+		cmd.Env = env
+	}
+	return cmd
 }
 
 func configure(args []string) {
@@ -1293,20 +1286,29 @@ func codexHomeSync(args []string) {
 		Force:     *force,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "codex_home_sync=error home=%s message=%s\n", emptyFallback(result.CodexHome, "(none)"), err.Error())
+		fmt.Fprintf(os.Stderr, "codex_home_sync=error root=%s message=%s\n", emptyFallback(result.Root, "(none)"), err.Error())
 		os.Exit(1)
 	}
-	fmt.Printf("codex_home_sync=%s home=%s accounts=%s message=%s\n",
+	fmt.Printf("codex_home_sync=%s root=%s accounts=%s message=%s\n",
 		emptyFallback(result.Status, "skip"),
-		emptyFallback(result.CodexHome, "(none)"),
+		emptyFallback(result.Root, "(none)"),
 		emptyFallback(strings.Join(result.Accounts, ","), "(none)"),
 		emptyFallback(result.Message, "(none)"),
 	)
-	if strings.TrimSpace(result.ConfigPath) != "" {
-		fmt.Printf("codex_home_config=%s\n", result.ConfigPath)
-	}
-	if strings.TrimSpace(result.AuthPath) != "" {
-		fmt.Printf("codex_home_auth=%s\n", result.AuthPath)
+	for _, item := range result.Results {
+		fmt.Printf("codex_home_account=%s status=%s home=%s codex_home=%s message=%s\n",
+			emptyFallback(item.Account, "(none)"),
+			emptyFallback(item.Status, "skip"),
+			emptyFallback(item.Paths.Home, "(none)"),
+			emptyFallback(item.Paths.CodexHome, "(none)"),
+			emptyFallback(item.Message, "(none)"),
+		)
+		if strings.TrimSpace(item.Paths.ConfigPath) != "" {
+			fmt.Printf("codex_home_config account=%s path=%s\n", emptyFallback(item.Account, "(none)"), item.Paths.ConfigPath)
+		}
+		if strings.TrimSpace(item.Paths.AuthPath) != "" {
+			fmt.Printf("codex_home_auth account=%s path=%s\n", emptyFallback(item.Account, "(none)"), item.Paths.AuthPath)
+		}
 	}
 }
 
@@ -1353,9 +1355,9 @@ func syncUsage() {
 
 func launchagentsUsage() {
 	fmt.Fprintln(os.Stderr, "LaunchAgents Usage:")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd launchagents install [--account a] [--account b] [--repo .] [--node-bin node] [--runtime-backend js|go] [--run-mode node|supervisor] [--daemon-bin ./bin/suncodexclawd] [--prefix com.sunbelife.suncodexclaw.feishu] [--codex-bin <path>] [--codex-home <path>] [--path <PATH>] [--keepalive] [--throttle-interval 10]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd launchagents install [--account a] [--account b] [--repo .] [--node-bin node] [--run-mode node|supervisor] [--daemon-bin ./bin/suncodexclawd] [--prefix com.sunbelife.suncodexclaw.feishu] [--codex-bin <path>] [--codex-home <path>] [--path <PATH>] [--keepalive] [--throttle-interval 10]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd launchagents uninstall [--account a] [--account b] [--repo .] [--prefix com.sunbelife.suncodexclaw.feishu]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd launchagents status [--account a] [--account b] [--repo .] [--node-bin node] [--runtime-backend js|go] [--run-mode node|supervisor] [--daemon-bin ./bin/suncodexclawd] [--prefix com.sunbelife.suncodexclaw.feishu] [--codex-bin <path>] [--codex-home <path>] [--path <PATH>] [--keepalive] [--throttle-interval 10]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd launchagents status [--account a] [--account b] [--repo .] [--node-bin node] [--run-mode node|supervisor] [--daemon-bin ./bin/suncodexclawd] [--prefix com.sunbelife.suncodexclaw.feishu] [--codex-bin <path>] [--codex-home <path>] [--path <PATH>] [--keepalive] [--throttle-interval 10]")
 	fmt.Fprintln(os.Stderr, "Notes:")
 	fmt.Fprintln(os.Stderr, "  - launchagents is a local/macOS deployment helper and does not support --docker-compose.")
 	fmt.Fprintln(os.Stderr, "  - Local mode is the default; passing --local is optional and only makes the mode explicit.")
@@ -1365,7 +1367,7 @@ func launchagentsUsage() {
 func timerStart(args []string) {
 	fs := flag.NewFlagSet("timer start", flag.ExitOnError)
 	nodeBin := fs.String("node-bin", getenvDefault("NODE_BIN", "node"), "node binary")
-	runtimeBackend := fs.String("runtime-backend", normalizeRuntimeBackend(getenvDefault("SUNCODEXCLAW_FEISHU_RUNTIME", "go")), "feishu runtime backend: js | go")
+	runtimeBackend := fs.String("runtime-backend", normalizeRuntimeBackend(getenvDefault("SUNCODEXCLAW_FEISHU_RUNTIME", "go")), "deprecated; Go native runtime is always used")
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	pollInterval := fs.Duration("poll-interval", 30*time.Second, "poll interval")
 	_ = fs.Parse(args)
@@ -1528,7 +1530,7 @@ func timerRun(args []string) {
 	args = reorderFlagsBeforePositionals(args, nil)
 	fs := flag.NewFlagSet("timer run", flag.ExitOnError)
 	nodeBin := fs.String("node-bin", getenvDefault("NODE_BIN", "node"), "node binary")
-	runtimeBackend := fs.String("runtime-backend", normalizeRuntimeBackend(getenvDefault("SUNCODEXCLAW_FEISHU_RUNTIME", "go")), "feishu runtime backend: js | go")
+	runtimeBackend := fs.String("runtime-backend", normalizeRuntimeBackend(getenvDefault("SUNCODEXCLAW_FEISHU_RUNTIME", "go")), "deprecated; Go native runtime is always used")
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	account := fs.String("account", "", "timer namespace / robot account name")
 	_ = fs.Parse(args)

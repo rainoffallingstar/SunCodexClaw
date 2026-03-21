@@ -211,8 +211,7 @@ func (s *Supervisor) isBotPIDForAccount(pid int, account string) bool {
 		return false
 	}
 	cmdline := string(bytes.TrimSpace(out))
-	needle := "feishu_ws_bot.js --account " + account
-	return strings.Contains(cmdline, needle)
+	return strings.Contains(cmdline, " feishu-run ") && strings.Contains(cmdline, "--account "+account)
 }
 
 func shellEscapeSingleQuotes(s string) string {
@@ -270,27 +269,16 @@ func (s *Supervisor) startOneLaunchctl(account string) (string, error) {
 		// Remove existing submit job if any.
 		_ = exec.Command(s.launchctlPath, "remove", label).Run()
 
-		var cmdString string
-		if normalizeRuntimeBackend(s.opts.RuntimeBackend) == "go" {
-			exe, err := os.Executable()
-			if err != nil {
-				return "", err
-			}
-			cmdString = "export PATH=" + shellEscapeSingleQuotes(getenvDefault("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")) +
-				"; cd " + shellEscapeSingleQuotes(s.opts.RepoRoot) +
-				"; exec " + shellEscapeSingleQuotes(exe) +
-				" feishu-run --repo " + shellEscapeSingleQuotes(s.opts.RepoRoot) +
-				" --account " + shellEscapeSingleQuotes(account) +
-				" >> " + shellEscapeSingleQuotes(logf) + " 2>&1"
-		} else {
-			script := filepath.Join(s.opts.RepoRoot, s.opts.BotScriptRel)
-			cmdString = "export PATH=" + shellEscapeSingleQuotes(getenvDefault("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")) +
-				"; cd " + shellEscapeSingleQuotes(s.opts.RepoRoot) +
-				"; exec " + shellEscapeSingleQuotes(s.opts.NodeBin) +
-				" " + shellEscapeSingleQuotes(script) +
-				" --account " + shellEscapeSingleQuotes(account) +
-				" >> " + shellEscapeSingleQuotes(logf) + " 2>&1"
+		exe, err := os.Executable()
+		if err != nil {
+			return "", err
 		}
+		cmdString := "export PATH=" + shellEscapeSingleQuotes(getenvDefault("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")) +
+			"; cd " + shellEscapeSingleQuotes(s.opts.RepoRoot) +
+			"; exec " + shellEscapeSingleQuotes(exe) +
+			" feishu-run --repo " + shellEscapeSingleQuotes(s.opts.RepoRoot) +
+			" --account " + shellEscapeSingleQuotes(account) +
+			" >> " + shellEscapeSingleQuotes(logf) + " 2>&1"
 
 		if err := exec.Command(s.launchctlPath, "submit", "-l", label, "--", "/bin/zsh", "-lc", cmdString).Run(); err != nil {
 			return "", fmt.Errorf("failed to submit launchctl job for %s: %w", account, err)

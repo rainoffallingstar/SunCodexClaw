@@ -136,15 +136,14 @@ func (s *Supervisor) writePlist(account string, opts LaunchAgentOptions) (string
   </array>`, xmlEscape(cmd))
 		extraEnv.WriteString("    <key>SUNCODEXCLAW_DISABLE_LAUNCHCTL</key>\n    <string>true</string>\n")
 	default:
-		if normalizeRuntimeBackend(s.opts.RuntimeBackend) == "go" {
-			daemon := strings.TrimSpace(opts.DaemonBin)
-			if daemon == "" {
-				daemon = filepath.Join(s.opts.RepoRoot, "bin", "suncodexclawd")
-			}
-			if fi, err := os.Stat(daemon); err != nil || fi.IsDir() || fi.Mode()&0o111 == 0 {
-				return "", fmt.Errorf("suncodexclawd not executable: %s (build first: bash tools/build_go_bins.sh)", daemon)
-			}
-			programArgs = fmt.Sprintf(`  <key>ProgramArguments</key>
+		daemon := strings.TrimSpace(opts.DaemonBin)
+		if daemon == "" {
+			daemon = filepath.Join(s.opts.RepoRoot, "bin", "suncodexclawd")
+		}
+		if fi, err := os.Stat(daemon); err != nil || fi.IsDir() || fi.Mode()&0o111 == 0 {
+			return "", fmt.Errorf("suncodexclawd not executable: %s (build first: bash tools/build_go_bins.sh)", daemon)
+		}
+		programArgs = fmt.Sprintf(`  <key>ProgramArguments</key>
   <array>
     <string>%s</string>
     <string>feishu-run</string>
@@ -153,20 +152,6 @@ func (s *Supervisor) writePlist(account string, opts LaunchAgentOptions) (string
     <string>--account</string>
     <string>%s</string>
   </array>`, xmlEscape(daemon), xmlEscape(s.opts.RepoRoot), xmlEscape(account))
-		} else {
-			botScript := filepath.Join(s.opts.RepoRoot, s.opts.BotScriptRel)
-			nodeBin := strings.TrimSpace(s.opts.NodeBin)
-			if nodeBin == "" {
-				nodeBin = "node"
-			}
-			programArgs = fmt.Sprintf(`  <key>ProgramArguments</key>
-  <array>
-    <string>%s</string>
-    <string>%s</string>
-    <string>--account</string>
-    <string>%s</string>
-  </array>`, xmlEscape(nodeBin), xmlEscape(botScript), xmlEscape(account))
-		}
 	}
 
 	keepAliveXML := ""
@@ -353,9 +338,11 @@ func (s *Supervisor) StatusLaunchAgents(accounts []string, opts LaunchAgentOptio
 			b, _ := os.ReadFile(plistPath)
 			txt := string(b)
 			if strings.Contains(txt, "suncodexclawd") {
-				mode = "supervisor"
-			} else if strings.Contains(txt, "feishu_ws_bot.js") {
-				mode = "node"
+				if strings.Contains(txt, "feishu-run") {
+					mode = "node"
+				} else {
+					mode = "supervisor"
+				}
 			}
 		}
 

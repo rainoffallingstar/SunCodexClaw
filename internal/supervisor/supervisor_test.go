@@ -148,17 +148,17 @@ func TestRuntimeCommandUsesGoBackend(t *testing.T) {
 	}
 }
 
-func TestRuntimeCommandUsesJSBackend(t *testing.T) {
+func TestRuntimeCommandIgnoresLegacyJSBackendFlag(t *testing.T) {
 	s := New(Options{RepoRoot: "/repo", NodeBin: "node", RuntimeBackend: "js"})
 	cmd, err := s.runtimeCommand(context.Background(), "assistant", false, "")
 	if err != nil {
 		t.Fatalf("runtimeCommand() error = %v", err)
 	}
-	if got := filepath.Base(cmd.Path); got != "node" {
-		t.Fatalf("cmd.Path = %q, want basename node", cmd.Path)
+	if got := filepath.Base(cmd.Path); got != filepath.Base(os.Args[0]) {
+		t.Fatalf("cmd.Path = %q, want current executable", cmd.Path)
 	}
 	joined := strings.Join(cmd.Args, " ")
-	if !strings.Contains(joined, "/repo/tools/feishu_ws_bot.js --account assistant") {
+	if !strings.Contains(joined, "feishu-run --repo /repo --account assistant") {
 		t.Fatalf("unexpected args: %v", cmd.Args)
 	}
 }

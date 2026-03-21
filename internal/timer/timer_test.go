@@ -214,7 +214,7 @@ func TestRuntimeCommandUsesGoBackend(t *testing.T) {
 	}
 }
 
-func TestRuntimeCommandUsesJSBackend(t *testing.T) {
+func TestRuntimeCommandIgnoresLegacyJSBackendFlag(t *testing.T) {
 	mgr := NewManager(Options{
 		RepoRoot:       "/repo",
 		NodeBin:        "node",
@@ -224,11 +224,11 @@ func TestRuntimeCommandUsesJSBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runtimeCommand() error = %v", err)
 	}
-	if got := filepath.Base(cmd.Path); got != "node" {
-		t.Fatalf("cmd.Path = %q, want basename node", cmd.Path)
+	if got := filepath.Base(cmd.Path); got != filepath.Base(os.Args[0]) {
+		t.Fatalf("cmd.Path = %q, want current executable", cmd.Path)
 	}
 	joined := strings.Join(cmd.Args, " ")
-	if !strings.Contains(joined, "/repo/tools/feishu_ws_bot.js --account assistant --timer-task-file /repo/config/timers/assistant/daily.json") {
+	if !strings.Contains(joined, "feishu-run --repo /repo --account assistant --timer-task-file /repo/config/timers/assistant/daily.json") {
 		t.Fatalf("unexpected args: %v", cmd.Args)
 	}
 }
