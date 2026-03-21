@@ -324,6 +324,7 @@ suncodexclawd restart --docker-compose
 - Compose 可通过 `.env` 中的 `SUNCODEXCLAW_FEISHU_RUNTIME=js|go` 选择容器内运行后端
 - 如果 `codex.base_url` 指向 Tailscale 网络里的另一台机器，优先使用该节点可路由的 Tailscale IP 或完整 MagicDNS 名称；不要依赖 `localhost`、`host.docker.internal`，也尽量不要只写未限定域名的短主机名
 - 现在默认不再把宿主机仓库下的 `./.codex` 绑进容器；容器会使用自己持久化的 `CODEX_HOME` volume。如果要让 Compose 容器复用某一份现成 Codex 配置，需要手动把对应配置写入这个 volume 内
+- 如果你之前已经创建过 `codex_home` volume，重建镜像后仍遇到 `Permission denied (os error 13)`，删除旧 volume 后再 `docker compose up -d --build`，让新 volume 继承镜像里预设的 `/home/node/.codex` 权限
 - 默认会把宿主机的 `WORKSPACE_PATH` 挂到容器内 `/app/workspace`，因此推荐把 `shared.codex.cwd_root` 配成相对路径 `workspace`
 
 `.env.example` 只包含 Compose 相关变量，例如：

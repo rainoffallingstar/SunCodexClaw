@@ -13,6 +13,7 @@ FROM node:20-bookworm-slim
 WORKDIR /app
 
 ENV NODE_ENV=production
+ENV HOME=/home/node
 ENV CODEX_HOME=/home/node/.codex
 
 RUN apt-get update \
@@ -23,6 +24,12 @@ RUN apt-get update \
 ARG CODEX_NPM_PKG=@openai/codex
 RUN npm install -g "${CODEX_NPM_PKG}" \
   && command -v codex >/dev/null 2>&1
+
+# Seed CODEX_HOME in the image so the named volume inherits a writable layout
+# on first mount instead of ending up root-owned.
+RUN mkdir -p /home/node/.codex \
+  && touch /home/node/.codex/.keep \
+  && chown -R node:node /home/node
 
 # Install only production deps first (better layer caching)
 COPY package.json package-lock.json ./
