@@ -220,7 +220,7 @@ function renderDefaultRuntimeDocs(accountName = '') {
     '- 先观察，再行动。改动前优先查看当前状态，避免盲改。',
     '- 用户要求“记住”长期规则时，优先写入 memory 系统。',
     '- 用户要求周期执行、定时提醒、自动巡检时，优先使用 timer 系统。',
-    `- 在当前工作目录里，优先使用 `.config.toml` 中的账号事实；若离开本目录或在仓库根目录执行命令，再显式补 \`--account ${resolvedAccount}\`。`,
+    `- 在当前工作目录里，优先使用 \`.config.toml\` 中的账号事实；若离开本目录或在仓库根目录执行命令，再显式补 \`--account ${resolvedAccount}\`。`,
     '- 如果用户要启动、停止、查看状态或重启服务，先确认目标是当前机器人，还是整组机器人。',
     '- 默认行为要记清：`start/preflight` 默认只处理 `enabled = true` 的机器人；`status/stop` 默认处理所有已配置机器人；`restart` 默认先停掉所有已配置机器人，再只启动 `enabled = true` 的机器人。',
     '- 如果配置了 WebDAV 文档同步，首次启动且文档缺失时，优先尝试 restore，再补默认模版。',
@@ -5520,5 +5520,8 @@ async function main() {
 
 main().catch((err) => {
   console.error('ERROR:', err.message);
+  if (err && err.stack) {
+    console.error(err.stack);
+  }
   process.exit(1);
 });
