@@ -26,6 +26,8 @@ write_final_reply = true
 
 [shared.codex]
 bin = "codex"
+# Custom codex base_url values must accept a WebSocket upgrade on /v1/responses.
+# HTTP-only OpenAI-compatible gateways will fail even if basic network connectivity is fine.
 base_url = "https://api.openai.com/v1"
 model = ""
 reasoning_effort = ""
@@ -42,6 +44,7 @@ enabled = true
 api_key = ""
 model = "gpt-4o-mini-transcribe"
 language = ""
+# Speech only needs the normal HTTP API; it does not require the Responses WebSocket endpoint.
 base_url = "https://api.openai.com/v1"
 ffmpeg_bin = ""
 

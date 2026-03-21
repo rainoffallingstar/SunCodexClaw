@@ -748,13 +748,37 @@ func buildCodexExecutionFailureReply(err error) string {
 	}
 	lines := []string{"处理失败：Codex 执行失败。"}
 	lower := strings.ToLower(details)
-	if strings.Contains(lower, "responses_websocket") || strings.Contains(lower, "/v1/responses") {
-		lines = append(lines, "请检查 codex.base_url / OPENAI_BASE_URL 指向的服务是否支持 Responses websocket。")
+	if looksLikeUnsupportedResponsesWebsocket(details) {
+		lines = append(lines,
+			"当前地址已经可达，但目标网关不支持 `/v1/responses` 的 Responses WebSocket 握手。",
+			"这通常不是 Tailscale 路由中断，而是该网关只兼容普通 HTTP 接口；请改用官方 OpenAI base_url，或换成支持 Responses WebSocket 的网关。",
+		)
+	} else if strings.Contains(lower, "responses_websocket") || strings.Contains(lower, "/v1/responses") {
+		lines = append(lines, "请检查 codex.base_url / OPENAI_BASE_URL 指向的服务是否支持 Responses WebSocket。")
 	}
 	if details != "" {
 		lines = append(lines, "详情："+details)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func looksLikeUnsupportedResponsesWebsocket(details string) bool {
+	lower := strings.ToLower(strings.TrimSpace(details))
+	if lower == "" {
+		return false
+	}
+	if strings.Contains(lower, "gateway_reachable_but_responses_websocket_unsupported") {
+		return true
+	}
+	if !strings.Contains(lower, "/v1/responses") && !strings.Contains(lower, "responses_websocket") {
+		return false
+	}
+	if strings.Contains(lower, "400 bad request") || strings.Contains(lower, "405 method not allowed") {
+		if strings.Contains(lower, "websocket") || strings.Contains(lower, "handshake") || strings.Contains(lower, "upgrade") {
+			return true
+		}
+	}
+	return false
 }
 
 func finishProgressReporter(ctx context.Context, progress progressReporter, note, finalReply string) {

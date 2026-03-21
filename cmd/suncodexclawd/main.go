@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"suncodexclaw/internal/codexhome"
 	"suncodexclaw/internal/configstore"
 	"suncodexclaw/internal/feishunative"
 	"suncodexclaw/internal/memory"
@@ -61,6 +62,8 @@ func main() {
 		syncCmd(os.Args[2:])
 	case "update":
 		updateCmd(os.Args[2:])
+	case "codex-home":
+		codexHomeCmd(os.Args[2:])
 	case "feishu-run":
 		feishuRun(os.Args[2:])
 	default:
@@ -89,6 +92,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  suncodexclawd sync <status|list-remote|push|pull|restore>")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd update [--repo owner/repo] [--version vX.Y.Z] [--bin /path/to/suncodexclawd] [--check] [--dry-run]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd update --docker-compose [--project-dir .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd codex-home sync [--repo .] [--account a] [--codex-home /home/node/.codex] [--force]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd launchagents <install|uninstall|status> ...   # macOS/local mode only")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd configure [--docker-compose] --account <account> [--yes]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd configure add [--docker-compose] --account <account> [--yes]")
@@ -1252,6 +1256,57 @@ func syncCmd(args []string) {
 	default:
 		syncUsage()
 		os.Exit(2)
+	}
+}
+
+func codexHomeCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "error: codex-home requires a subcommand (supported: sync)")
+		os.Exit(2)
+	}
+	switch strings.TrimSpace(args[0]) {
+	case "sync":
+		codexHomeSync(args[1:])
+	case "help", "--help", "-h":
+		fmt.Fprintln(os.Stderr, "Usage:")
+		fmt.Fprintln(os.Stderr, "  suncodexclawd codex-home sync [--repo .] [--account a] [--codex-home /home/node/.codex] [--force]")
+	default:
+		fmt.Fprintln(os.Stderr, "error: unsupported codex-home subcommand:", args[0])
+		os.Exit(2)
+	}
+}
+
+func codexHomeSync(args []string) {
+	fs := flag.NewFlagSet("codex-home sync", flag.ExitOnError)
+	var accounts multiFlag
+	fs.Var(&accounts, "account", "account name (repeatable); defaults to enabled accounts")
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	codexHomeFlag := fs.String("codex-home", strings.TrimSpace(os.Getenv("CODEX_HOME")), "CODEX_HOME target directory")
+	force := fs.Bool("force", false, "overwrite existing unmanaged config.toml/auth.json in CODEX_HOME")
+	_ = fs.Parse(args)
+
+	repo := resolveRepoRoot(*repoFlag)
+	result, err := codexhome.Sync(codexhome.Options{
+		RepoRoot:  repo,
+		Accounts:  append([]string(nil), accounts...),
+		CodexHome: *codexHomeFlag,
+		Force:     *force,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codex_home_sync=error home=%s message=%s\n", emptyFallback(result.CodexHome, "(none)"), err.Error())
+		os.Exit(1)
+	}
+	fmt.Printf("codex_home_sync=%s home=%s accounts=%s message=%s\n",
+		emptyFallback(result.Status, "skip"),
+		emptyFallback(result.CodexHome, "(none)"),
+		emptyFallback(strings.Join(result.Accounts, ","), "(none)"),
+		emptyFallback(result.Message, "(none)"),
+	)
+	if strings.TrimSpace(result.ConfigPath) != "" {
+		fmt.Printf("codex_home_config=%s\n", result.ConfigPath)
+	}
+	if strings.TrimSpace(result.AuthPath) != "" {
+		fmt.Printf("codex_home_auth=%s\n", result.AuthPath)
 	}
 }
 

@@ -510,11 +510,24 @@ func TestBuildCodexExecutionFailureReplyAddsResponsesHint(t *testing.T) {
 	if !strings.Contains(reply, "处理失败：Codex 执行失败。") {
 		t.Fatalf("reply missing failure summary: %s", reply)
 	}
-	if !strings.Contains(reply, "Responses websocket") {
+	if !strings.Contains(reply, "Responses WebSocket") {
 		t.Fatalf("reply missing websocket hint: %s", reply)
 	}
 	if !strings.Contains(reply, "详情：") {
 		t.Fatalf("reply missing details: %s", reply)
+	}
+}
+
+func TestBuildCodexExecutionFailureReplyExplainsUnsupportedGateway(t *testing.T) {
+	reply := buildCodexExecutionFailureReply(errors.New("codex exec failed: gateway_reachable_but_responses_websocket_unsupported status=400 Bad Request body=Bad Request error=websocket: bad handshake"))
+	for _, want := range []string{
+		"当前地址已经可达",
+		"/v1/responses",
+		"Tailscale 路由中断",
+	} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("reply missing %q: %s", want, reply)
+		}
 	}
 }
 
@@ -582,7 +595,7 @@ func TestHandleMessageEventSendsFinalErrorReplyWhenCodexFails(t *testing.T) {
 	if !strings.Contains(sentText, "处理失败：Codex 执行失败。") {
 		t.Fatalf("sent text missing summary: %s", sentText)
 	}
-	if !strings.Contains(sentText, "Responses websocket") {
+	if !strings.Contains(sentText, "Responses WebSocket") {
 		t.Fatalf("sent text missing websocket hint: %s", sentText)
 	}
 	if !strings.Contains(sentText, "详情：") {

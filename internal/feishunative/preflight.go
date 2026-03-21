@@ -87,6 +87,13 @@ func ProbeCodexBaseURL(ctx context.Context, cfg Config) (CodexBaseURLProbeResult
 			Message: message,
 		}, nil
 	}
+	if message, ok := classifyUnsupportedResponsesWebsocket(statusCode, statusText, bodyText, err); ok {
+		return CodexBaseURLProbeResult{
+			Enabled: true,
+			WSURL:   wsURL,
+			Message: message,
+		}, fmt.Errorf("codex responses websocket probe failed: %s", message)
+	}
 
 	message := compactText(buildCodexBaseURLProbeErrorMessage(statusText, bodyText, err), 300)
 	return CodexBaseURLProbeResult{
@@ -152,4 +159,34 @@ func buildCodexBaseURLProbeErrorMessage(statusText, bodyText string, err error) 
 		return "unknown probe error"
 	}
 	return strings.Join(parts, " ")
+}
+
+func classifyUnsupportedResponsesWebsocket(statusCode int, statusText, bodyText string, err error) (string, bool) {
+	if statusCode != http.StatusBadRequest && statusCode != http.StatusMethodNotAllowed {
+		return "", false
+	}
+	text := strings.ToLower(strings.Join([]string{
+		strings.TrimSpace(statusText),
+		strings.TrimSpace(bodyText),
+		probeErrorText(err),
+	}, " "))
+	if !strings.Contains(text, "websocket") && !strings.Contains(text, "upgrade") && !strings.Contains(text, "handshake") {
+		return "", false
+	}
+	message := fmt.Sprintf(
+		"gateway_reachable_but_responses_websocket_unsupported status=%s body=%s",
+		emptyFallback(statusText, fmt.Sprintf("%d", statusCode)),
+		emptyFallback(bodyText, "(empty)"),
+	)
+	if errText := probeErrorText(err); errText != "" && !strings.Contains(strings.ToLower(message), strings.ToLower(errText)) {
+		message += " error=" + errText
+	}
+	return compactText(message, 300), true
+}
+
+func probeErrorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return strings.TrimSpace(err.Error())
 }

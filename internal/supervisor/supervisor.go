@@ -395,6 +395,9 @@ func shouldIgnoreCodexBaseURLProbeError(result feishunative.CodexBaseURLProbeRes
 	if message == "" {
 		message = strings.ToLower(strings.TrimSpace(err.Error()))
 	}
+	if strings.Contains(message, "gateway_reachable_but_responses_websocket_unsupported") {
+		return true
+	}
 	if !strings.Contains(message, "websocket: bad handshake") {
 		return false
 	}

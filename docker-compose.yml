@@ -21,6 +21,8 @@ services:
       SUNCODEXCLAW_RESTART_WINDOW: "${SUNCODEXCLAW_RESTART_WINDOW:-10m}"
       # Runtime backend inside container: go | js
       SUNCODEXCLAW_FEISHU_RUNTIME: "${SUNCODEXCLAW_FEISHU_RUNTIME:-go}"
+      # Best-effort sync: generate CODEX_HOME/config.toml + auth.json from bot codex.base_url/api_key.
+      SUNCODEXCLAW_SYNC_CODEX_HOME: "${SUNCODEXCLAW_SYNC_CODEX_HOME:-true}"
       # Optional: override node binary
       # NODE_BIN: "node"
     ports:

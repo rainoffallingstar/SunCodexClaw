@@ -184,6 +184,7 @@ verification_token = "your_verification_token"
 
 [feishu.assistant.codex]
 api_key = "sk-xxxx"
+# 自定义 codex.base_url 必须支持 /v1/responses 的 WebSocket 握手。
 base_url = "https://api.openai.com/v1"
 ```
 
@@ -323,7 +324,13 @@ suncodexclawd restart --docker-compose
 - 容器内执行 `suncodexclawd start` 时仍然按默认本机模式启动，不会再套一层 Docker
 - Compose 可通过 `.env` 中的 `SUNCODEXCLAW_FEISHU_RUNTIME=js|go` 选择容器内运行后端
 - 如果 `codex.base_url` 指向 Tailscale 网络里的另一台机器，优先使用该节点可路由的 Tailscale IP 或完整 MagicDNS 名称；不要依赖 `localhost`、`host.docker.internal`，也尽量不要只写未限定域名的短主机名
+- 仅“地址可达”还不够。Codex CLI 会把 `codex.base_url` 当作 Responses API 入口，并要求目标在 `/v1/responses` 支持 WebSocket 握手；如果网关只兼容普通 HTTP/OpenAI 接口，通常会报 `400 Bad Request websocket: bad handshake`
+- 因此，`speech.base_url` 可以指向普通 HTTP 兼容网关，但 `codex.base_url` 必须指向官方 OpenAI，或你自己部署的、明确支持 Responses WebSocket 的网关
 - 现在默认不再把宿主机仓库下的 `./.codex` 绑进容器；容器会使用自己持久化的 `CODEX_HOME` volume。如果要让 Compose 容器复用某一份现成 Codex 配置，需要手动把对应配置写入这个 volume 内
+- 容器启动时现在会默认尝试执行 `suncodexclawd codex-home sync`：如果所有启用账号解析出的 `codex.base_url` / `codex.api_key` 一致，就把它们写成容器内 `CODEX_HOME` 的 `config.toml` 与 `auth.json`，作为给 Codex CLI 读取的补充配置来源
+- 这一步只是减少对环境变量注入的依赖，不能绕过 Codex CLI 仍要求 `/v1/responses` WebSocket 的限制
+- 如果多个启用账号的 Codex 连接配置不一致，或 `CODEX_HOME` 里已经有不是 SunCodexClaw 托管的 `config.toml` / `auth.json`，同步会自动跳过并继续使用现有环境变量路径
+- 如需关闭这一步，可在 `.env` 里设置 `SUNCODEXCLAW_SYNC_CODEX_HOME=false`
 - 如果你之前已经创建过 `codex_home` volume，重建镜像后仍遇到 `Permission denied (os error 13)`，删除旧 volume 后再 `docker compose up -d --build`，让新 volume 继承镜像里预设的 `/home/node/.codex` 权限
 - 默认会把宿主机的 `WORKSPACE_PATH` 挂到容器内 `/app/workspace`，因此推荐把 `shared.codex.cwd_root` 配成相对路径 `workspace`
 
@@ -337,6 +344,7 @@ HEALTH_PORT=8080
 SUNCODEXCLAW_UID=1000
 SUNCODEXCLAW_GID=1000
 SUNCODEXCLAW_FEISHU_RUNTIME=go
+SUNCODEXCLAW_SYNC_CODEX_HOME=true
 # CODEX_NPM_PKG=@openai/codex
 ```
 

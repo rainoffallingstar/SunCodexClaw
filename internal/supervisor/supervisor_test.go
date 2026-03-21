@@ -239,7 +239,7 @@ func TestShouldIgnoreCodexBaseURLProbeErrorAllowsBadHandshake400(t *testing.T) {
 	result := feishunative.CodexBaseURLProbeResult{
 		Enabled: true,
 		WSURL:   "ws://example.com/v1/responses",
-		Message: "400 Bad Request body=Bad Request websocket: bad handshake",
+		Message: "gateway_reachable_but_responses_websocket_unsupported status=400 Bad Request body=Bad Request error=websocket: bad handshake",
 	}
 	if !shouldIgnoreCodexBaseURLProbeError(result, errors.New("codex responses websocket probe failed")) {
 		t.Fatalf("shouldIgnoreCodexBaseURLProbeError() = false, want true")

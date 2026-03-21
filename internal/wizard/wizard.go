@@ -637,7 +637,7 @@ func buildItems(account string) []missingItem {
 
 	// Codex secrets/connection
 	add(missingItem{Key: "codex.api_key", Prompt: "Codex/OpenAI API key (optional if codex already logged in)", Recommended: "sk-xxxx", Optional: true, Target: "secrets"})
-	add(missingItem{Key: "codex.base_url", Prompt: "Codex base url (optional)", Recommended: "https://api.openai.com/v1", Optional: true, Target: "secrets"})
+	add(missingItem{Key: "codex.base_url", Prompt: "Codex base url (optional; must support /v1/responses websocket)", Recommended: "https://api.openai.com/v1", Optional: true, Target: "secrets"})
 
 	// Speech
 	add(missingItem{Key: "speech.enabled", Prompt: "Speech enabled (true/false)", Recommended: "true", Optional: true, Type: "bool", Target: "overlay"})

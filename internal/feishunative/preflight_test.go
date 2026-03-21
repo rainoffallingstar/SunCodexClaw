@@ -106,6 +106,9 @@ func TestProbeCodexBaseURLRejectsBadRequest(t *testing.T) {
 	if err == nil {
 		t.Fatalf("ProbeCodexBaseURL() error = nil, want non-nil")
 	}
+	if !strings.Contains(result.Message, "gateway_reachable_but_responses_websocket_unsupported") {
+		t.Fatalf("ProbeCodexBaseURL() message = %q", result.Message)
+	}
 	if !strings.Contains(result.Message, "400 Bad Request") {
 		t.Fatalf("ProbeCodexBaseURL() message = %q", result.Message)
 	}
