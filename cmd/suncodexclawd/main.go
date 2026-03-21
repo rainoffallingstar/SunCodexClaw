@@ -113,7 +113,7 @@ func baseFlags(name string) (*flag.FlagSet, *multiFlag, *string, *string, *strin
 	fs.Var(&accounts, "account", "account name (repeatable); default set depends on subcommand")
 	nodeBin := fs.String("node-bin", getenvDefault("NODE_BIN", "node"), "node binary")
 	repo := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
-	runtimeBackend := fs.String("runtime-backend", normalizeRuntimeBackend(getenvDefault("SUNCODEXCLAW_FEISHU_RUNTIME", "js")), "feishu runtime backend: js | go")
+	runtimeBackend := fs.String("runtime-backend", normalizeRuntimeBackend(getenvDefault("SUNCODEXCLAW_FEISHU_RUNTIME", "go")), "feishu runtime backend: js | go")
 	return fs, &accounts, nodeBin, repo, runtimeBackend
 }
 
@@ -1310,7 +1310,7 @@ func launchagentsUsage() {
 func timerStart(args []string) {
 	fs := flag.NewFlagSet("timer start", flag.ExitOnError)
 	nodeBin := fs.String("node-bin", getenvDefault("NODE_BIN", "node"), "node binary")
-	runtimeBackend := fs.String("runtime-backend", normalizeRuntimeBackend(getenvDefault("SUNCODEXCLAW_FEISHU_RUNTIME", "js")), "feishu runtime backend: js | go")
+	runtimeBackend := fs.String("runtime-backend", normalizeRuntimeBackend(getenvDefault("SUNCODEXCLAW_FEISHU_RUNTIME", "go")), "feishu runtime backend: js | go")
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	pollInterval := fs.Duration("poll-interval", 30*time.Second, "poll interval")
 	_ = fs.Parse(args)
@@ -1473,7 +1473,7 @@ func timerRun(args []string) {
 	args = reorderFlagsBeforePositionals(args, nil)
 	fs := flag.NewFlagSet("timer run", flag.ExitOnError)
 	nodeBin := fs.String("node-bin", getenvDefault("NODE_BIN", "node"), "node binary")
-	runtimeBackend := fs.String("runtime-backend", normalizeRuntimeBackend(getenvDefault("SUNCODEXCLAW_FEISHU_RUNTIME", "js")), "feishu runtime backend: js | go")
+	runtimeBackend := fs.String("runtime-backend", normalizeRuntimeBackend(getenvDefault("SUNCODEXCLAW_FEISHU_RUNTIME", "go")), "feishu runtime backend: js | go")
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	account := fs.String("account", "", "timer namespace / robot account name")
 	_ = fs.Parse(args)
