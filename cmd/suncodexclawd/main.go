@@ -683,11 +683,46 @@ func preflight(args []string) {
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
 			ok = false
+			continue
+		}
+		if err := runCodexBaseURLPreflight(context.Background(), os.Stdout, repo, a); err != nil {
+			ok = false
 		}
 	}
 	if !ok {
 		os.Exit(1)
 	}
+}
+
+func runCodexBaseURLPreflight(ctx context.Context, w io.Writer, repo, account string) error {
+	cfg, err := feishunative.Load(repo, account)
+	if err != nil {
+		return err
+	}
+	result, err := feishunative.ProbeCodexBaseURL(ctx, cfg)
+	if result.Skipped {
+		if strings.TrimSpace(result.Message) != "" {
+			_, _ = fmt.Fprintf(w, "codex_base_url_probe=skip account=%s reason=%s\n", account, result.Message)
+		}
+		return nil
+	}
+	if result.Enabled {
+		status := "ok"
+		if err != nil {
+			status = "error"
+		}
+		message := result.Message
+		if message == "" && err != nil {
+			message = err.Error()
+		}
+		_, _ = fmt.Fprintf(w, "codex_base_url_probe=%s account=%s url=%s message=%s\n",
+			status,
+			account,
+			emptyFallback(result.WSURL, "(none)"),
+			emptyFallback(message, "(none)"),
+		)
+	}
+	return err
 }
 
 func feishuRun(args []string) {

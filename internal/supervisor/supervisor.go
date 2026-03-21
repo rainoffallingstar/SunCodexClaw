@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"suncodexclaw/internal/configstore"
+	"suncodexclaw/internal/feishunative"
 )
 
 type LogFileNotFoundError struct {
@@ -355,6 +356,17 @@ func (s *Supervisor) preflightAccount(account string) error {
 			msg = msg[len(msg)-1200:]
 		}
 		return fmt.Errorf("%s", msg)
+	}
+	cfg, err := feishunative.Load(s.opts.RepoRoot, account)
+	if err != nil {
+		return err
+	}
+	result, err := feishunative.ProbeCodexBaseURL(context.Background(), cfg)
+	if result.Skipped || !result.Enabled {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("codex_base_url_probe=error url=%s message=%s", result.WSURL, result.Message)
 	}
 	return nil
 }

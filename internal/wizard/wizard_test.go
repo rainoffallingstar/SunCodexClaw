@@ -226,3 +226,85 @@ func TestApplyPatchesWritesOverlayAndSecrets(t *testing.T) {
 		t.Fatalf("sync webdav.url = %v, want https://dav.example.com", got)
 	}
 }
+
+func TestBuildBootstrapRequestUsesActualAccount(t *testing.T) {
+	repo := t.TempDir()
+	store := configstore.NewStore(repo)
+
+	req, err := buildBootstrapRequest(store, "openclaw")
+	if err != nil {
+		t.Fatalf("buildBootstrapRequest() error = %v", err)
+	}
+	if got, _ := getDottedValue(req.Overlay, "bot_name"); got != "飞书 Codex 助手 openclaw" {
+		t.Fatalf("overlay bot_name = %v, want account-specific default", got)
+	}
+	if got, _ := getDottedValue(req.Secrets, "app_id"); got != "cli_xxx" {
+		t.Fatalf("secrets app_id = %v, want cli_xxx", got)
+	}
+	if got, _ := getDottedValue(req.Secrets, "codex.base_url"); got != "https://api.openai.com/v1" {
+		t.Fatalf("secrets codex.base_url = %v, want official default", got)
+	}
+}
+
+func TestBuildBootstrapRequestKeepsExistingValues(t *testing.T) {
+	repo := t.TempDir()
+	store := configstore.NewStore(repo)
+	if err := applyPatches(store, "openclaw", applyRequest{
+		Overlay: map[string]any{
+			"bot_name": "Existing Bot",
+		},
+		Secrets: map[string]any{
+			"app_id": "cli_real",
+			"codex": map[string]any{
+				"base_url": "http://gateway.local/v1",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("applyPatches() error = %v", err)
+	}
+
+	req, err := buildBootstrapRequest(store, "openclaw")
+	if err != nil {
+		t.Fatalf("buildBootstrapRequest() error = %v", err)
+	}
+	if got, ok := getDottedValue(req.Overlay, "bot_name"); ok {
+		t.Fatalf("overlay bot_name bootstrap should not override existing value: %v", got)
+	}
+	if got, ok := getDottedValue(req.Secrets, "app_id"); ok {
+		t.Fatalf("secrets app_id bootstrap should not override existing value: %v", got)
+	}
+	if got, ok := getDottedValue(req.Secrets, "codex.base_url"); ok {
+		t.Fatalf("secrets codex.base_url bootstrap should not override existing value: %v", got)
+	}
+}
+
+func TestBootstrapAndApplyPatchesWriteQuotedAccountTables(t *testing.T) {
+	repo := t.TempDir()
+	store := configstore.NewStore(repo)
+
+	bootstrapReq, err := buildBootstrapRequest(store, "share.claw")
+	if err != nil {
+		t.Fatalf("buildBootstrapRequest() error = %v", err)
+	}
+	if err := applyPatches(store, "share.claw", bootstrapReq); err != nil {
+		t.Fatalf("applyPatches() error = %v", err)
+	}
+
+	botsBody, err := os.ReadFile(filepath.Join(repo, "config", "feishu", "bots.toml"))
+	if err != nil {
+		t.Fatalf("ReadFile(bots.toml) error = %v", err)
+	}
+	if !strings.Contains(string(botsBody), `[bot."share.claw"]`) {
+		t.Fatalf("bots.toml missing quoted account table:\n%s", string(botsBody))
+	}
+
+	secretsBody, err := os.ReadFile(filepath.Join(repo, "config", "secrets", "local.toml"))
+	if err != nil {
+		t.Fatalf("ReadFile(local.toml) error = %v", err)
+	}
+	for _, want := range []string{`[feishu."share.claw"]`, `[feishu."share.claw".codex]`} {
+		if !strings.Contains(string(secretsBody), want) {
+			t.Fatalf("local.toml missing %s:\n%s", want, string(secretsBody))
+		}
+	}
+}

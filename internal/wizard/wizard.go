@@ -128,6 +128,11 @@ func Configure(opts Options) error {
 	}
 
 	req := applyRequest{Secrets: secretsPatch, Overlay: overlayPatch, SharedOverlay: sharedOverlayPatch}
+	bootstrapReq, err := buildBootstrapRequest(store, *account)
+	if err != nil {
+		return err
+	}
+	req = mergeApplyRequests(bootstrapReq, req)
 	if err := applyPatches(store, *account, req); err != nil {
 		return err
 	}
@@ -450,6 +455,85 @@ func applyPatches(store *configstore.Store, account string, req applyRequest) er
 	return nil
 }
 
+func buildBootstrapRequest(store *configstore.Store, account string) (applyRequest, error) {
+	overlay, err := store.ReadOverlay(account)
+	if err != nil {
+		return applyRequest{}, err
+	}
+	secrets, err := store.ReadSecretsEntry("feishu", account)
+	if err != nil {
+		return applyRequest{}, err
+	}
+	return applyRequest{
+		Overlay: missingOnly(map[string]any{
+			"enabled":     true,
+			"bot_name":    defaultBotName(account),
+			"bot_open_id": "",
+		}, overlay),
+		Secrets: missingOnly(map[string]any{
+			"app_id":             "cli_xxx",
+			"app_secret":         "your_app_secret",
+			"encrypt_key":        "your_encrypt_key",
+			"verification_token": "your_verification_token",
+			"bot_open_id":        "",
+			"codex": map[string]any{
+				"api_key":  "sk-xxxx",
+				"base_url": "https://api.openai.com/v1",
+			},
+		}, secrets),
+	}, nil
+}
+
+func missingOnly(defaults, existing map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range defaults {
+		current, ok := existing[key]
+		if !ok {
+			out[key] = cloneValue(value)
+			continue
+		}
+		defaultMap, defaultIsMap := value.(map[string]any)
+		existingMap, existingIsMap := current.(map[string]any)
+		if defaultIsMap && existingIsMap {
+			if nested := missingOnly(defaultMap, existingMap); len(nested) > 0 {
+				out[key] = nested
+			}
+		}
+	}
+	return out
+}
+
+func cloneValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := map[string]any{}
+		for key, item := range v {
+			out[key] = cloneValue(item)
+		}
+		return out
+	case []string:
+		out := make([]string, len(v))
+		copy(out, v)
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = cloneValue(item)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func mergeApplyRequests(base, override applyRequest) applyRequest {
+	return applyRequest{
+		Secrets:       configstore.DeepMerge(base.Secrets, override.Secrets),
+		Overlay:       configstore.DeepMerge(base.Overlay, override.Overlay),
+		SharedOverlay: configstore.DeepMerge(base.SharedOverlay, override.SharedOverlay),
+	}
+}
+
 func stripTopLevel(root map[string]any, key string) map[string]any {
 	out := map[string]any{}
 	for k, v := range root {
@@ -503,10 +587,10 @@ func buildItems(account string) []missingItem {
 	}
 
 	// Feishu secrets
-	add(missingItem{Key: "app_id", Prompt: "Feishu app_id", Target: "secrets"})
-	add(missingItem{Key: "app_secret", Prompt: "Feishu app_secret", Target: "secrets"})
-	add(missingItem{Key: "encrypt_key", Prompt: "Feishu encrypt_key", Target: "secrets"})
-	add(missingItem{Key: "verification_token", Prompt: "Feishu verification_token", Target: "secrets"})
+	add(missingItem{Key: "app_id", Prompt: "Feishu app_id", Recommended: "cli_xxx", Target: "secrets"})
+	add(missingItem{Key: "app_secret", Prompt: "Feishu app_secret", Recommended: "your_app_secret", Target: "secrets"})
+	add(missingItem{Key: "encrypt_key", Prompt: "Feishu encrypt_key", Recommended: "your_encrypt_key", Target: "secrets"})
+	add(missingItem{Key: "verification_token", Prompt: "Feishu verification_token", Recommended: "your_verification_token", Target: "secrets"})
 
 	// Bot identity
 	add(missingItem{Key: "enabled", Prompt: "Bot enabled (true/false)", Recommended: "true", Optional: true, Type: "bool", Target: "overlay"})
@@ -552,8 +636,8 @@ func buildItems(account string) []missingItem {
 	add(missingItem{Key: "codex.approval_policy", Prompt: "Codex approval policy (never/on-request/on-failure/untrusted)", Recommended: "never", Optional: true, Target: "overlay"})
 
 	// Codex secrets/connection
-	add(missingItem{Key: "codex.api_key", Prompt: "Codex/OpenAI API key (optional if codex already logged in)", Optional: true, Target: "secrets"})
-	add(missingItem{Key: "codex.base_url", Prompt: "Codex base url (optional)", Optional: true, Target: "secrets"})
+	add(missingItem{Key: "codex.api_key", Prompt: "Codex/OpenAI API key (optional if codex already logged in)", Recommended: "sk-xxxx", Optional: true, Target: "secrets"})
+	add(missingItem{Key: "codex.base_url", Prompt: "Codex base url (optional)", Recommended: "https://api.openai.com/v1", Optional: true, Target: "secrets"})
 
 	// Speech
 	add(missingItem{Key: "speech.enabled", Prompt: "Speech enabled (true/false)", Recommended: "true", Optional: true, Type: "bool", Target: "overlay"})

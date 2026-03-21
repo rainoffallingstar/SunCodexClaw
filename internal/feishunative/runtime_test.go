@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
 
@@ -501,6 +502,91 @@ func TestBuildResumePromptIncludesSystemGuides(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("resume prompt missing %q\n%s", want, prompt)
 		}
+	}
+}
+
+func TestBuildCodexExecutionFailureReplyAddsResponsesHint(t *testing.T) {
+	reply := buildCodexExecutionFailureReply(errors.New("codex exec failed: responses_websocket 400 Bad Request url: ws://demo/v1/responses"))
+	if !strings.Contains(reply, "处理失败：Codex 执行失败。") {
+		t.Fatalf("reply missing failure summary: %s", reply)
+	}
+	if !strings.Contains(reply, "Responses websocket") {
+		t.Fatalf("reply missing websocket hint: %s", reply)
+	}
+	if !strings.Contains(reply, "详情：") {
+		t.Fatalf("reply missing details: %s", reply)
+	}
+}
+
+func TestHandleMessageEventSendsFinalErrorReplyWhenCodexFails(t *testing.T) {
+	previousRunCodex := runCodexFunc
+	previousSendTextReply := sendTextReplyFunc
+	t.Cleanup(func() {
+		runCodexFunc = previousRunCodex
+		sendTextReplyFunc = previousSendTextReply
+	})
+
+	runErr := errors.New("codex exec failed: responses_websocket 400 Bad Request url: ws://demo/v1/responses")
+	runCodexFunc = func(context.Context, CodexConfig, CodexRunRequest) (CodexReply, error) {
+		return CodexReply{}, runErr
+	}
+
+	var sentChatID string
+	var sentText string
+	sendTextReplyFunc = func(ctx context.Context, client *lark.Client, chatID, text string) error {
+		sentChatID = chatID
+		sentText = text
+		return nil
+	}
+
+	cfg := Config{
+		AccountName: "assistant",
+		AutoReply:   true,
+		ReplyMode:   "codex",
+	}
+	chatID := "oc_test_chat"
+	messageID := "om_test_message"
+	messageType := "text"
+	chatType := "p2p"
+	content := `{"text":"你好"}`
+	senderType := "user"
+	envelope := &messageEnvelope{
+		Event: &larkim.P2MessageReceiveV1{
+			Event: &larkim.P2MessageReceiveV1Data{
+				Sender: &larkim.EventSender{
+					SenderType: &senderType,
+				},
+				Message: &larkim.EventMessage{
+					ChatId:      &chatID,
+					MessageId:   &messageID,
+					MessageType: &messageType,
+					ChatType:    &chatType,
+					Content:     &content,
+				},
+			},
+		},
+		Scope: conversationScope{
+			TaskKey:  chatID,
+			StateKey: chatID,
+			Kind:     "p2p",
+		},
+	}
+
+	err := handleMessageEvent(context.Background(), nil, cfg, envelope, nil)
+	if !errors.Is(err, runErr) {
+		t.Fatalf("handleMessageEvent() error = %v, want %v", err, runErr)
+	}
+	if sentChatID != chatID {
+		t.Fatalf("sent chat id = %q, want %q", sentChatID, chatID)
+	}
+	if !strings.Contains(sentText, "处理失败：Codex 执行失败。") {
+		t.Fatalf("sent text missing summary: %s", sentText)
+	}
+	if !strings.Contains(sentText, "Responses websocket") {
+		t.Fatalf("sent text missing websocket hint: %s", sentText)
+	}
+	if !strings.Contains(sentText, "详情：") {
+		t.Fatalf("sent text missing details: %s", sentText)
 	}
 }
 

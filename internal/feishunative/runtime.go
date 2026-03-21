@@ -26,6 +26,10 @@ type RunOptions struct {
 	Stderr        io.Writer
 }
 
+var runCodexFunc = RunCodex
+
+var sendTextReplyFunc = sendTextReply
+
 func Run(ctx context.Context, opts RunOptions) error {
 	if opts.Stdout == nil {
 		opts.Stdout = os.Stdout
@@ -587,7 +591,7 @@ func handleMessageEvent(ctx context.Context, client *lark.Client, cfg Config, en
 			codexPrompt = buildResumePrompt(cfg, chatID, userText, len(imagePaths))
 			fallbackPrompt = freshPrompt
 		}
-		codexReply, err = RunCodex(ctx, cfg.Codex, CodexRunRequest{
+		codexReply, err = runCodexFunc(ctx, cfg.Codex, CodexRunRequest{
 			Prompt:          codexPrompt,
 			FallbackPrompt:  fallbackPrompt,
 			ResumeSessionID: activeCodexThreadID,
@@ -605,8 +609,9 @@ func handleMessageEvent(ctx context.Context, client *lark.Client, cfg Config, en
 				return nil
 			}
 			if progress != nil {
-				progress.fail(ctx, "处理失败："+err.Error())
+				progress.fail(ctx, buildCodexExecutionFailureReply(err))
 			}
+			_ = sendTextReplyFunc(ctx, client, chatID, buildCodexExecutionFailureReply(err))
 			fmt.Printf("reply=error mode=%s message=%s\n", cfg.ReplyMode, compactText(err.Error(), 400))
 			return err
 		}
@@ -707,7 +712,7 @@ func runTimerTask(ctx context.Context, client *lark.Client, cfg Config, taskFile
 	fmt.Fprintf(w, "timer_task_cwd=%s\n", emptyFallback(timerCodex.Cwd, optsFallbackCwd()))
 	progress := startProgressReporter(ctx, client, task.ChatID, cfg, task.Prompt)
 
-	codexReply, err := RunCodex(ctx, timerCodex, CodexRunRequest{
+	codexReply, err := runCodexFunc(ctx, timerCodex, CodexRunRequest{
 		Prompt: buildPrompt(cfg, task.ChatID, task.Prompt, "定时任务 | "+task.ID, nil),
 		OnEvent: func(event codexProgressEvent) {
 			if progress != nil {
@@ -734,6 +739,22 @@ func runTimerTask(ctx context.Context, client *lark.Client, cfg Config, taskFile
 	finishProgressReporter(ctx, progress, "定时任务执行完成，结果见下条消息。", reply)
 	fmt.Fprintf(w, "TIMER_TASK_OK id=%s\n", task.ID)
 	return nil
+}
+
+func buildCodexExecutionFailureReply(err error) string {
+	details := ""
+	if err != nil {
+		details = compactText(strings.TrimSpace(err.Error()), 1200)
+	}
+	lines := []string{"处理失败：Codex 执行失败。"}
+	lower := strings.ToLower(details)
+	if strings.Contains(lower, "responses_websocket") || strings.Contains(lower, "/v1/responses") {
+		lines = append(lines, "请检查 codex.base_url / OPENAI_BASE_URL 指向的服务是否支持 Responses websocket。")
+	}
+	if details != "" {
+		lines = append(lines, "详情："+details)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func finishProgressReporter(ctx context.Context, progress progressReporter, note, finalReply string) {

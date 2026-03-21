@@ -1,6 +1,7 @@
 # Shared non-secret runtime config.
 # File location: config/feishu/bots.toml
 # Per-bot values under [bot.<account>] override [shared] for that bot.
+# Replace `your_bot` with the real account name. If the account contains dots or spaces, quote it manually.
 
 [shared]
 domain = "feishu"
@@ -44,7 +45,7 @@ language = ""
 base_url = "https://api.openai.com/v1"
 ffmpeg_bin = ""
 
-[bot.assistant]
+[bot.your_bot]
 enabled = true
 bot_name = "飞书 Codex 助手"
 bot_open_id = ""
