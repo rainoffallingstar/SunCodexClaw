@@ -663,6 +663,279 @@ func TestShouldReplyUsesRawTextMentionEvenAfterNormalization(t *testing.T) {
 	}
 }
 
+func TestHandleMessageEventIncludesQuotedReplyInCodexPrompt(t *testing.T) {
+	previousRunCodex := runCodexFunc
+	previousSendTextReply := sendTextReplyFunc
+	previousFetchReferencedMessageText := fetchReferencedMessageTextFunc
+	t.Cleanup(func() {
+		runCodexFunc = previousRunCodex
+		sendTextReplyFunc = previousSendTextReply
+		fetchReferencedMessageTextFunc = previousFetchReferencedMessageText
+	})
+
+	var prompt string
+	runErr := errors.New("codex exec failed: synthetic")
+	runCodexFunc = func(_ context.Context, _ CodexConfig, request CodexRunRequest) (CodexReply, error) {
+		prompt = request.Prompt
+		return CodexReply{}, runErr
+	}
+	sendTextReplyFunc = func(context.Context, *lark.Client, string, string) error {
+		return nil
+	}
+	fetchReferencedMessageTextFunc = func(_ context.Context, _ *lark.Client, _ *larkim.EventMessage, _ Config) (referencedMessage, []string, error) {
+		return referencedMessage{
+			MessageID:   "om_parent_message",
+			MessageType: "text",
+			Text:        "上一条：请按这个格式整理",
+		}, nil, nil
+	}
+
+	cfg := Config{
+		AccountName: "assistant",
+		AutoReply:   true,
+		ReplyMode:   "codex",
+	}
+	chatID := "oc_test_chat"
+	messageID := "om_test_message"
+	parentID := "om_parent_message"
+	messageType := "text"
+	chatType := "p2p"
+	content := `{"text":"这次帮我改成表格"}`
+	senderType := "user"
+	envelope := &messageEnvelope{
+		Event: &larkim.P2MessageReceiveV1{
+			Event: &larkim.P2MessageReceiveV1Data{
+				Sender: &larkim.EventSender{
+					SenderType: &senderType,
+				},
+				Message: &larkim.EventMessage{
+					ChatId:      &chatID,
+					MessageId:   &messageID,
+					ParentId:    &parentID,
+					MessageType: &messageType,
+					ChatType:    &chatType,
+					Content:     &content,
+				},
+			},
+		},
+		Scope: conversationScope{
+			TaskKey:  chatID,
+			StateKey: chatID,
+			Kind:     "p2p",
+		},
+	}
+
+	err := handleMessageEvent(context.Background(), nil, cfg, envelope, nil)
+	if !errors.Is(err, runErr) {
+		t.Fatalf("handleMessageEvent() error = %v, want %v", err, runErr)
+	}
+	for _, want := range []string{
+		"<referenced_message>",
+		"message_id: om_parent_message",
+		"message_type: text",
+		"content:\n上一条：请按这个格式整理",
+		"<current_message>\n这次帮我改成表格",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestHandleMessageEventFallsBackWhenQuotedReplyFetchFails(t *testing.T) {
+	previousRunCodex := runCodexFunc
+	previousSendTextReply := sendTextReplyFunc
+	previousFetchReferencedMessageText := fetchReferencedMessageTextFunc
+	t.Cleanup(func() {
+		runCodexFunc = previousRunCodex
+		sendTextReplyFunc = previousSendTextReply
+		fetchReferencedMessageTextFunc = previousFetchReferencedMessageText
+	})
+
+	var prompt string
+	runErr := errors.New("codex exec failed: synthetic")
+	runCodexFunc = func(_ context.Context, _ CodexConfig, request CodexRunRequest) (CodexReply, error) {
+		prompt = request.Prompt
+		return CodexReply{}, runErr
+	}
+	sendTextReplyFunc = func(context.Context, *lark.Client, string, string) error {
+		return nil
+	}
+	fetchReferencedMessageTextFunc = func(_ context.Context, _ *lark.Client, _ *larkim.EventMessage, _ Config) (referencedMessage, []string, error) {
+		return referencedMessage{}, nil, errors.New("permission denied")
+	}
+
+	cfg := Config{
+		AccountName: "assistant",
+		AutoReply:   true,
+		ReplyMode:   "codex",
+	}
+	chatID := "oc_test_chat"
+	messageID := "om_test_message"
+	parentID := "om_parent_message"
+	messageType := "text"
+	chatType := "p2p"
+	content := `{"text":"只处理这一句"}`
+	senderType := "user"
+	envelope := &messageEnvelope{
+		Event: &larkim.P2MessageReceiveV1{
+			Event: &larkim.P2MessageReceiveV1Data{
+				Sender: &larkim.EventSender{
+					SenderType: &senderType,
+				},
+				Message: &larkim.EventMessage{
+					ChatId:      &chatID,
+					MessageId:   &messageID,
+					ParentId:    &parentID,
+					MessageType: &messageType,
+					ChatType:    &chatType,
+					Content:     &content,
+				},
+			},
+		},
+		Scope: conversationScope{
+			TaskKey:  chatID,
+			StateKey: chatID,
+			Kind:     "p2p",
+		},
+	}
+
+	err := handleMessageEvent(context.Background(), nil, cfg, envelope, nil)
+	if !errors.Is(err, runErr) {
+		t.Fatalf("handleMessageEvent() error = %v, want %v", err, runErr)
+	}
+	if strings.Contains(prompt, "<referenced_message>") {
+		t.Fatalf("prompt should not include quoted reply when fetch fails:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "只处理这一句") {
+		t.Fatalf("prompt missing current message:\n%s", prompt)
+	}
+}
+
+func TestMergeReferencedPromptOmitsFileSummary(t *testing.T) {
+	prompt := mergeReferencedPrompt("请处理这个回复", referencedMessage{
+		MessageID:   "om_parent_file",
+		MessageType: "file",
+	})
+	if !strings.Contains(prompt, "message_type: file") {
+		t.Fatalf("prompt missing message_type:\n%s", prompt)
+	}
+	for _, unwanted := range []string{"文件名：", "文件大小：", "[文件消息]", "content:"} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("prompt should not include %q:\n%s", unwanted, prompt)
+		}
+	}
+}
+
+func TestMergeReferencedPromptIncludesReferencedFilePath(t *testing.T) {
+	prompt := mergeReferencedPrompt("请处理这个回复", referencedMessage{
+		MessageID:   "om_parent_file",
+		MessageType: "file",
+		LocalPath:   "/tmp/ref/report.csv",
+	})
+	if !strings.Contains(prompt, "local_path: /tmp/ref/report.csv") {
+		t.Fatalf("prompt missing local_path:\n%s", prompt)
+	}
+}
+
+func TestMaterializeReferencedMessageDownloadsFile(t *testing.T) {
+	previousDownloadFile := downloadFileToTempFileFunc
+	t.Cleanup(func() {
+		downloadFileToTempFileFunc = previousDownloadFile
+	})
+
+	expectedDir := filepath.Join(t.TempDir(), "ref-file")
+	expectedPath := filepath.Join(expectedDir, "report.csv")
+	downloadFileToTempFileFunc = func(context.Context, *lark.Client, string, string, string) (string, string, string, error) {
+		return expectedDir, expectedPath, "report.csv", nil
+	}
+
+	messageID := "om_parent_file"
+	msgType := "file"
+	content := `{"file_key":"file_123","file_name":"report.csv"}`
+	result, cleanupDirs, err := materializeReferencedMessage(context.Background(), nil, &larkim.Message{
+		MessageId: &messageID,
+		MsgType:   &msgType,
+		Body:      &larkim.MessageBody{Content: &content},
+	}, Config{})
+	if err != nil {
+		t.Fatalf("materializeReferencedMessage() error = %v", err)
+	}
+	if result.LocalPath != expectedPath {
+		t.Fatalf("LocalPath = %q, want %q", result.LocalPath, expectedPath)
+	}
+	if len(cleanupDirs) != 1 || cleanupDirs[0] != expectedDir {
+		t.Fatalf("cleanupDirs = %v, want [%q]", cleanupDirs, expectedDir)
+	}
+}
+
+func TestMaterializeReferencedMessageDownloadsImage(t *testing.T) {
+	previousDownloadImage := downloadImageToTempFileFunc
+	t.Cleanup(func() {
+		downloadImageToTempFileFunc = previousDownloadImage
+	})
+
+	expectedDir := filepath.Join(t.TempDir(), "ref-image")
+	expectedPath := filepath.Join(expectedDir, "quote.jpg")
+	downloadImageToTempFileFunc = func(context.Context, *lark.Client, string, string) (string, string, error) {
+		return expectedDir, expectedPath, nil
+	}
+
+	messageID := "om_parent_image"
+	msgType := "image"
+	content := `{"image_key":"img_123"}`
+	result, cleanupDirs, err := materializeReferencedMessage(context.Background(), nil, &larkim.Message{
+		MessageId: &messageID,
+		MsgType:   &msgType,
+		Body:      &larkim.MessageBody{Content: &content},
+	}, Config{})
+	if err != nil {
+		t.Fatalf("materializeReferencedMessage() error = %v", err)
+	}
+	if got, want := strings.Join(result.ImagePaths, ","), expectedPath; got != want {
+		t.Fatalf("ImagePaths = %q, want %q", got, want)
+	}
+	if len(cleanupDirs) != 1 || cleanupDirs[0] != expectedDir {
+		t.Fatalf("cleanupDirs = %v, want [%q]", cleanupDirs, expectedDir)
+	}
+}
+
+func TestMaterializeReferencedMessageTranscribesAudio(t *testing.T) {
+	previousDownloadAudio := downloadAudioToTempFileFunc
+	previousTranscribeAudio := transcribeAudioMessageFunc
+	t.Cleanup(func() {
+		downloadAudioToTempFileFunc = previousDownloadAudio
+		transcribeAudioMessageFunc = previousTranscribeAudio
+	})
+
+	expectedDir := filepath.Join(t.TempDir(), "ref-audio")
+	expectedPath := filepath.Join(expectedDir, "quote.opus")
+	downloadAudioToTempFileFunc = func(context.Context, *lark.Client, string, string) (string, string, string, error) {
+		return expectedDir, expectedPath, ".opus", nil
+	}
+	transcribeAudioMessageFunc = func(context.Context, string, SpeechConfig) (audioTranscript, error) {
+		return audioTranscript{Text: "这是引用语音的转写"}, nil
+	}
+
+	messageID := "om_parent_audio"
+	msgType := "audio"
+	content := `{"file_key":"audio_123"}`
+	result, cleanupDirs, err := materializeReferencedMessage(context.Background(), nil, &larkim.Message{
+		MessageId: &messageID,
+		MsgType:   &msgType,
+		Body:      &larkim.MessageBody{Content: &content},
+	}, Config{Speech: SpeechConfig{Enabled: true}})
+	if err != nil {
+		t.Fatalf("materializeReferencedMessage() error = %v", err)
+	}
+	if result.Text != "这是引用语音的转写" {
+		t.Fatalf("Text = %q, want 引用转写", result.Text)
+	}
+	if len(cleanupDirs) != 1 || cleanupDirs[0] != expectedDir {
+		t.Fatalf("cleanupDirs = %v, want [%q]", cleanupDirs, expectedDir)
+	}
+}
+
 func TestBuildSyncAdminArgsRestoreDoesNotForceOverwrite(t *testing.T) {
 	args := buildSyncAdminArgs(&adminCommand{Kind: "sync", Action: "restore", Snapshot: "latest"}, "assistant")
 	joined := strings.Join(args, " ")

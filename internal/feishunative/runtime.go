@@ -30,6 +30,24 @@ var runCodexFunc = RunCodex
 
 var sendTextReplyFunc = sendTextReply
 
+var fetchReferencedMessageTextFunc = fetchReferencedMessageText
+
+var downloadImageToTempFileFunc = downloadImageToTempFile
+
+var downloadFileToTempFileFunc = downloadFileToTempFile
+
+var downloadAudioToTempFileFunc = downloadAudioToTempFile
+
+var transcribeAudioMessageFunc = transcribeAudioMessage
+
+type referencedMessage struct {
+	MessageID   string
+	MessageType string
+	Text        string
+	LocalPath   string
+	ImagePaths  []string
+}
+
 func Run(ctx context.Context, opts RunOptions) error {
 	if opts.Stdout == nil {
 		opts.Stdout = os.Stdout
@@ -376,7 +394,7 @@ func handleMessageEvent(ctx context.Context, client *lark.Client, cfg Config, en
 			fmt.Println("skip_reason=missing_file_key")
 			return sendTextReply(ctx, client, chatID, "文件接收失败，请重新发送。")
 		}
-		tempDir, filePath, fileName, err := downloadFileToTempFile(ctx, client, messageID, parsed.FileKey, parsed.FileName)
+		tempDir, filePath, fileName, err := downloadFileToTempFileFunc(ctx, client, messageID, parsed.FileKey, parsed.FileName)
 		if err != nil {
 			return sendTextReply(ctx, client, chatID, "文件下载失败，请稍后重试。")
 		}
@@ -418,12 +436,12 @@ func handleMessageEvent(ctx context.Context, client *lark.Client, cfg Config, en
 			fmt.Println("skip_reason=missing_audio_key")
 			return sendTextReply(ctx, client, chatID, "语音接收失败，请重新发送。")
 		}
-		tempDir, filePath, _, err := downloadAudioToTempFile(ctx, client, messageID, parsed.FileKey)
+		tempDir, filePath, _, err := downloadAudioToTempFileFunc(ctx, client, messageID, parsed.FileKey)
 		if err != nil {
 			return sendTextReply(ctx, client, chatID, "语音下载失败，请稍后重试。")
 		}
 		tempCleanup = append(tempCleanup, tempDir)
-		transcript, err := transcribeAudioMessage(ctx, filePath, cfg.Speech)
+		transcript, err := transcribeAudioMessageFunc(ctx, filePath, cfg.Speech)
 		if err != nil {
 			if strings.TrimSpace(cfg.Speech.FFmpegBin) == "" && strings.Contains(strings.ToLower(err.Error()), "ffmpeg") {
 				return sendTextReply(ctx, client, chatID, "当前环境缺少语音转码能力，请安装 ffmpeg 或使用带 ffmpeg 的镜像后重试。")
@@ -534,6 +552,21 @@ func handleMessageEvent(ctx context.Context, client *lark.Client, cfg Config, en
 	if strings.TrimSpace(userText) == "" {
 		fmt.Println("skip_reason=empty_text_after_strip")
 		return nil
+	}
+	parentMessageID := strings.TrimSpace(deref(message.ParentId))
+	if parentMessageID != "" {
+		referenced, refCleanupDirs, refErr := fetchReferencedMessageTextFunc(ctx, client, message, cfg)
+		if refErr != nil {
+			fmt.Printf("[warn] reply_parent_message ignored: parent_id=%s message=%s\n", parentMessageID, compactText(refErr.Error(), 300))
+		} else if referenced.hasContent() {
+			fmt.Printf("reply_parent_id=%s\n", parentMessageID)
+			tempCleanup = append(tempCleanup, refCleanupDirs...)
+			if len(referenced.ImagePaths) > 0 {
+				imagePaths = append(append([]string(nil), referenced.ImagePaths...), imagePaths...)
+			}
+			userText = mergeReferencedPrompt(userText, referenced)
+			historyUserText = compactText(mergeReferencedHistory(historyUserText, referenced), 4000)
+		}
 	}
 
 	var progress progressReporter
@@ -844,7 +877,7 @@ func buildIncomingImagePrompt(ctx context.Context, client *lark.Client, messageI
 	imagePaths := []string{}
 	tempCleanup := []string{}
 	for _, imageKey := range imageKeys {
-		tempDir, filePath, err := downloadImageToTempFile(ctx, client, messageID, imageKey)
+		tempDir, filePath, err := downloadImageToTempFileFunc(ctx, client, messageID, imageKey)
 		if err != nil {
 			for _, path := range tempCleanup {
 				_ = os.RemoveAll(path)
@@ -894,6 +927,188 @@ func parseIncomingText(messageType, rawContent string) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+func fetchReferencedMessageText(ctx context.Context, client *lark.Client, message *larkim.EventMessage, cfg Config) (referencedMessage, []string, error) {
+	if message == nil {
+		return referencedMessage{}, nil, nil
+	}
+	parentMessageID := strings.TrimSpace(deref(message.ParentId))
+	if parentMessageID == "" {
+		return referencedMessage{}, nil, nil
+	}
+	if client == nil {
+		return referencedMessage{}, nil, fmt.Errorf("missing lark client")
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	resp, err := client.Im.V1.Message.Get(fetchCtx, larkim.NewGetMessageReqBuilder().
+		MessageId(parentMessageID).
+		Build())
+	if err != nil {
+		return referencedMessage{}, nil, err
+	}
+	if resp == nil {
+		return referencedMessage{}, nil, fmt.Errorf("empty response")
+	}
+	if !resp.Success() {
+		return referencedMessage{}, nil, fmt.Errorf("code=%d msg=%s", resp.Code, strings.TrimSpace(resp.Msg))
+	}
+	if resp.Data == nil || len(resp.Data.Items) == 0 || resp.Data.Items[0] == nil {
+		return referencedMessage{}, nil, fmt.Errorf("parent message not found")
+	}
+	return materializeReferencedMessage(fetchCtx, client, resp.Data.Items[0], cfg)
+}
+
+func materializeReferencedMessage(ctx context.Context, client *lark.Client, message *larkim.Message, cfg Config) (referencedMessage, []string, error) {
+	if message == nil {
+		return referencedMessage{}, nil, nil
+	}
+	messageID := strings.TrimSpace(deref(message.MessageId))
+	messageType := strings.TrimSpace(strings.ToLower(deref(message.MsgType)))
+	rawContent := ""
+	if message.Body != nil {
+		rawContent = deref(message.Body.Content)
+	}
+	result := referencedMessage{
+		MessageID:   messageID,
+		MessageType: messageType,
+	}
+	cleanupDirs := []string{}
+	switch messageType {
+	case "text", "post":
+		text, _ := parseIncomingText(messageType, rawContent)
+		result.Text = normalizeFetchedMessageText(text, message.Mentions, cfg.MentionAliases)
+		if strings.EqualFold(messageType, "post") {
+			parsed := parsePostMessageContent(rawContent)
+			if len(parsed.ImageKeys) > 0 {
+				imagePaths, tempDirs, err := downloadReferencedImages(ctx, client, messageID, parsed.ImageKeys)
+				if err != nil {
+					fmt.Printf("[warn] reply_parent_images ignored: parent_id=%s message=%s\n", messageID, compactText(err.Error(), 300))
+				} else {
+					result.ImagePaths = imagePaths
+					cleanupDirs = append(cleanupDirs, tempDirs...)
+				}
+			}
+		}
+		return result, cleanupDirs, nil
+	case "image":
+		parsed := parseImageMessageContent(rawContent)
+		if len(parsed.ImageKeys) > 0 {
+			imagePaths, tempDirs, err := downloadReferencedImages(ctx, client, messageID, parsed.ImageKeys)
+			if err != nil {
+				fmt.Printf("[warn] reply_parent_image ignored: parent_id=%s message=%s\n", messageID, compactText(err.Error(), 300))
+				return result, nil, nil
+			}
+			result.ImagePaths = imagePaths
+			cleanupDirs = append(cleanupDirs, tempDirs...)
+			return result, cleanupDirs, nil
+		}
+	case "audio":
+		parsed := parseAudioMessageContent(rawContent)
+		if strings.TrimSpace(parsed.FileKey) != "" {
+			tempDir, filePath, _, err := downloadAudioToTempFileFunc(ctx, client, messageID, parsed.FileKey)
+			if err != nil {
+				fmt.Printf("[warn] reply_parent_audio ignored: parent_id=%s message=%s\n", messageID, compactText(err.Error(), 300))
+				return result, nil, nil
+			}
+			cleanupDirs = append(cleanupDirs, tempDir)
+			transcript, err := transcribeAudioMessageFunc(ctx, filePath, cfg.Speech)
+			if err != nil {
+				fmt.Printf("[warn] reply_parent_audio_transcript ignored: parent_id=%s message=%s\n", messageID, compactText(err.Error(), 300))
+				return result, cleanupDirs, nil
+			}
+			result.Text = strings.TrimSpace(transcript.Text)
+			return result, cleanupDirs, nil
+		}
+	case "file":
+		parsed := parseFileMessageContent(rawContent)
+		if strings.TrimSpace(parsed.FileKey) != "" {
+			tempDir, filePath, _, err := downloadFileToTempFileFunc(ctx, client, messageID, parsed.FileKey, parsed.FileName)
+			if err != nil {
+				fmt.Printf("[warn] reply_parent_file ignored: parent_id=%s message=%s\n", messageID, compactText(err.Error(), 300))
+				return result, nil, nil
+			}
+			result.LocalPath = filePath
+			cleanupDirs = append(cleanupDirs, tempDir)
+			return result, cleanupDirs, nil
+		}
+	}
+	return result, cleanupDirs, nil
+}
+
+func downloadReferencedImages(ctx context.Context, client *lark.Client, messageID string, imageKeys []string) ([]string, []string, error) {
+	imagePaths := []string{}
+	cleanupDirs := []string{}
+	for _, imageKey := range imageKeys {
+		tempDir, filePath, err := downloadImageToTempFileFunc(ctx, client, messageID, imageKey)
+		if err != nil {
+			for _, path := range cleanupDirs {
+				_ = os.RemoveAll(path)
+			}
+			return nil, nil, err
+		}
+		cleanupDirs = append(cleanupDirs, tempDir)
+		imagePaths = append(imagePaths, filePath)
+	}
+	return imagePaths, cleanupDirs, nil
+}
+
+func (r referencedMessage) hasContent() bool {
+	return strings.TrimSpace(r.MessageID) != "" ||
+		strings.TrimSpace(r.MessageType) != "" ||
+		strings.TrimSpace(r.Text) != "" ||
+		strings.TrimSpace(r.LocalPath) != "" ||
+		len(r.ImagePaths) > 0
+}
+
+func mergeReferencedPrompt(currentText string, referenced referencedMessage) string {
+	current := strings.TrimSpace(currentText)
+	if !referenced.hasContent() {
+		return current
+	}
+	lines := []string{
+		"<referenced_message>",
+		"message_id: " + emptyFallback(referenced.MessageID, "(unknown)"),
+		"message_type: " + emptyFallback(referenced.MessageType, "(unknown)"),
+	}
+	if strings.TrimSpace(referenced.Text) != "" {
+		lines = append(lines, "content:")
+		lines = append(lines, referenced.Text)
+	}
+	if strings.TrimSpace(referenced.LocalPath) != "" {
+		lines = append(lines, "local_path: "+referenced.LocalPath)
+	}
+	if len(referenced.ImagePaths) > 0 {
+		lines = append(lines, "image_paths:")
+		for _, path := range referenced.ImagePaths {
+			lines = append(lines, "- "+path)
+		}
+	}
+	lines = append(lines, "</referenced_message>", "<current_message>")
+	if current != "" {
+		lines = append(lines, current)
+	}
+	lines = append(lines, "</current_message>")
+	return strings.Join(lines, "\n")
+}
+
+func mergeReferencedHistory(currentText string, referenced referencedMessage) string {
+	current := strings.TrimSpace(currentText)
+	if !referenced.hasContent() {
+		return current
+	}
+	lines := []string{
+		"[回复引用]",
+		"type=" + emptyFallback(referenced.MessageType, "(unknown)"),
+	}
+	if strings.TrimSpace(referenced.Text) != "" {
+		lines = append(lines, "引用正文："+referenced.Text)
+	}
+	if current != "" {
+		lines = append(lines, "新消息："+current)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func shouldReply(cfg Config, message *larkim.EventMessage, chatType string, text string, textualMention string, allowMentionCarry bool) bool {

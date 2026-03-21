@@ -181,10 +181,7 @@ func stripLeadingTextMentions(raw string, aliases []string) string {
 }
 
 func normalizeIncomingText(raw string, mentions []*larkim.MentionEvent, aliases []string) string {
-	text := raw
-	if text == "" {
-		return ""
-	}
+	keys := make([]string, 0, len(mentions))
 	for _, mention := range mentions {
 		if mention == nil {
 			continue
@@ -193,6 +190,32 @@ func normalizeIncomingText(raw string, mentions []*larkim.MentionEvent, aliases 
 		if key == "" {
 			continue
 		}
+		keys = append(keys, key)
+	}
+	return normalizeIncomingTextWithMentionKeys(raw, keys, aliases)
+}
+
+func normalizeFetchedMessageText(raw string, mentions []*larkim.Mention, aliases []string) string {
+	keys := make([]string, 0, len(mentions))
+	for _, mention := range mentions {
+		if mention == nil {
+			continue
+		}
+		key := strings.TrimSpace(deref(mention.Key))
+		if key == "" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	return normalizeIncomingTextWithMentionKeys(raw, keys, aliases)
+}
+
+func normalizeIncomingTextWithMentionKeys(raw string, mentionKeys []string, aliases []string) string {
+	text := raw
+	if text == "" {
+		return ""
+	}
+	for _, key := range mentionKeys {
 		text = strings.ReplaceAll(text, key, " ")
 	}
 	text = regexp.MustCompile(`(?i)<at\b[^>]*>.*?</at>`).ReplaceAllString(text, " ")
