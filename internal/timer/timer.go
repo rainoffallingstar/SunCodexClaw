@@ -64,10 +64,11 @@ type Store struct {
 }
 
 type Options struct {
-	RepoRoot     string
-	NodeBin      string
-	PollInterval time.Duration
-	Output       io.Writer
+	RepoRoot       string
+	NodeBin        string
+	RuntimeBackend string
+	PollInterval   time.Duration
+	Output         io.Writer
 }
 
 type Manager struct {
@@ -336,6 +337,10 @@ func sanitizeNamespaceAccount(raw string) string {
 	text = strings.ReplaceAll(text, " ", "-")
 	text = strings.Trim(text, "-.")
 	return text
+}
+
+func NamespaceAccount(raw string) string {
+	return sanitizeNamespaceAccount(raw)
 }
 
 func normalizeTaskStorageAccount(task Task, explicit string) string {
@@ -670,7 +675,7 @@ func (m *Manager) runTask(ctx context.Context, task Task, scheduledFor time.Time
 	}
 	defer logFile.Close()
 
-	startLine := fmt.Sprintf("[%s] timer id=%s action=%s scheduled_for=%s chat_id=%s\n", now.Format(time.RFC3339), task.ID, taskAction(task), scheduledFor.UTC().Format(time.RFC3339), task.ChatID)
+	startLine := formatTimerTaskStartLine(now, task, scheduledFor, normalizeRuntimeBackend(m.opts.RuntimeBackend))
 	if _, err := logFile.WriteString(startLine); err != nil {
 		return err
 	}
@@ -698,8 +703,71 @@ func (m *Manager) runTask(ctx context.Context, task Task, scheduledFor time.Time
 		st.NextRunAt = nextRun.UTC().Format(time.RFC3339)
 	}
 	st.UpdatedAt = finishedAt.Format(time.RFC3339)
+	finishLine := formatTimerTaskFinishLine(finishedAt, task, st.LastExitCode, finishedAt.Sub(now), runErr)
+	_, _ = logFile.WriteString(finishLine)
 	_ = m.store.WriteState(st, task.StorageAccount)
 	return runErr
+}
+
+func formatTimerTaskStartLine(now time.Time, task Task, scheduledFor time.Time, runtimeBackend string) string {
+	return fmt.Sprintf(
+		"[%s] timer_started id=%s action=%s account=%s namespace=%s runtime_backend=%s scheduled_for=%s chat_id=%s\n",
+		now.Format(time.RFC3339),
+		task.ID,
+		taskAction(task),
+		emptyFallback(strings.TrimSpace(task.Account), "(none)"),
+		emptyFallback(strings.TrimSpace(task.StorageAccount), "global"),
+		emptyFallback(strings.TrimSpace(runtimeBackend), "js"),
+		scheduledFor.UTC().Format(time.RFC3339),
+		emptyFallback(strings.TrimSpace(task.ChatID), "(none)"),
+	)
+}
+
+func formatTimerTaskFinishLine(now time.Time, task Task, exitCode int, duration time.Duration, runErr error) string {
+	status := "ok"
+	if runErr != nil {
+		status = "error"
+	}
+	line := fmt.Sprintf(
+		"[%s] timer_finished id=%s action=%s account=%s namespace=%s status=%s exit_code=%d duration_ms=%d",
+		now.Format(time.RFC3339),
+		task.ID,
+		taskAction(task),
+		emptyFallback(strings.TrimSpace(task.Account), "(none)"),
+		emptyFallback(strings.TrimSpace(task.StorageAccount), "global"),
+		status,
+		exitCode,
+		maxInt64(duration.Milliseconds(), 0),
+	)
+	if runErr != nil {
+		line += " error=" + compactInlineLog(runErr.Error(), 400)
+	}
+	return line + "\n"
+}
+
+func compactInlineLog(raw string, max int) string {
+	text := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(raw, "\r", " "), "\n", " "))
+	if text == "" || max <= 0 || len(text) <= max {
+		return text
+	}
+	if max <= 3 {
+		return text[:max]
+	}
+	return text[:max-3] + "..."
+}
+
+func maxInt64(value, fallback int64) int64 {
+	if value < fallback {
+		return fallback
+	}
+	return value
+}
+
+func emptyFallback(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func (m *Manager) executeTask(ctx context.Context, task Task, logFile *os.File) error {
@@ -723,10 +791,33 @@ func (m *Manager) executeTask(ctx context.Context, task Task, logFile *os.File) 
 		return cmd.Run()
 	default:
 		payloadPath := m.store.TaskPath(task.ID, task.StorageAccount)
-		cmd := exec.CommandContext(ctx, m.opts.NodeBin, filepath.Join(m.opts.RepoRoot, "tools", "feishu_ws_bot.js"), "--account", task.Account, "--timer-task-file", payloadPath)
+		cmd, err := m.runtimeCommand(ctx, task.Account, payloadPath)
+		if err != nil {
+			return err
+		}
 		cmd.Dir = m.opts.RepoRoot
 		cmd.Stdout = logFile
 		cmd.Stderr = logFile
 		return cmd.Run()
+	}
+}
+
+func (m *Manager) runtimeCommand(ctx context.Context, account, timerTaskFile string) (*exec.Cmd, error) {
+	if normalizeRuntimeBackend(m.opts.RuntimeBackend) == "go" {
+		exe, err := os.Executable()
+		if err != nil {
+			return nil, err
+		}
+		return exec.CommandContext(ctx, exe, "feishu-run", "--repo", m.opts.RepoRoot, "--account", account, "--timer-task-file", timerTaskFile), nil
+	}
+	return exec.CommandContext(ctx, m.opts.NodeBin, filepath.Join(m.opts.RepoRoot, "tools", "feishu_ws_bot.js"), "--account", account, "--timer-task-file", timerTaskFile), nil
+}
+
+func normalizeRuntimeBackend(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "go", "native":
+		return "go"
+	default:
+		return "js"
 	}
 }

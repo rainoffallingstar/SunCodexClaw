@@ -16,8 +16,11 @@ Usage:
   bash tools/install_feishu_launchagents.sh <install|uninstall|status> [account|all] [-- ...]
 
 Notes:
+  - macOS/local mode only
   - deprecated wrapper; forwards to:
     ./bin/suncodexclawd launchagents <install|uninstall|status> [--account <account>]
+  - omitting account defaults to enabled accounts for install
+  - omitting account defaults to all configured accounts for uninstall/status
 USAGE
 }
 

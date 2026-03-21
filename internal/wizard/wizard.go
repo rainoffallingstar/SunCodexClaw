@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"suncodexclaw/internal/configstore"
@@ -16,7 +17,7 @@ type inspectResult struct {
 	Account string `json:"account"`
 	Repo    string `json:"repo"`
 	Paths   struct {
-		AccountJSON string `json:"accountJson"`
+		AccountConfig string `json:"accountConfig"`
 	} `json:"paths"`
 	Items []missingItem `json:"items"`
 }
@@ -42,18 +43,22 @@ type Options struct {
 
 func Usage(w io.Writer, bin string) {
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintf(w, "  %s configure --account assistant [--yes]\n", bin)
-	fmt.Fprintf(w, "  %s configure add --account reviewer [--yes]\n", bin)
+	fmt.Fprintf(w, "  %s configure --account <account> [--yes]\n", bin)
+	fmt.Fprintf(w, "  %s configure add --account <another-account> [--yes]\n", bin)
+	fmt.Fprintf(w, "  %s configure edit --account <account> [--yes]\n", bin)
 }
 
 func Configure(opts Options) error {
 	args := append([]string{}, opts.Args...)
-	if len(args) > 0 && args[0] == "add" {
-		args = args[1:]
+	if len(args) > 0 {
+		action := strings.TrimSpace(args[0])
+		if action == "add" || action == "edit" {
+			args = args[1:]
+		}
 	}
 	fs := flag.NewFlagSet("configure", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	account := fs.String("account", "", "feishu account name (config/feishu/bots.toml [bot.<account>])")
+	account := fs.String("account", "", "feishu account name (config/feishu/bots.toml [bot.<account>]; quote TOML table names manually if account contains dots/spaces)")
 	yes := fs.Bool("yes", false, "accept current or recommended defaults without prompting")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -131,7 +136,7 @@ func Configure(opts Options) error {
 	fmt.Println("Done.")
 	fmt.Printf("updated=config/secrets/local.toml\n")
 	fmt.Printf("updated=config/feishu/bots.toml [shared]\n")
-	fmt.Printf("updated=%s\n", inspect.Paths.AccountJSON)
+	fmt.Printf("updated=%s\n", inspect.Paths.AccountConfig)
 	return nil
 }
 
@@ -236,13 +241,13 @@ func groupMissing(items []missingItem) []missingGroup {
 
 	var out []missingGroup
 	if len(feishuCreds) > 0 {
-		out = append(out, missingGroup{name: "Feishu Credentials (config/secrets/local.toml [feishu.<account>])", items: feishuCreds})
+		out = append(out, missingGroup{name: "Feishu Credentials (config/secrets/local.toml [feishu.<account>], quote when account has dots/spaces)", items: feishuCreds})
 	}
 	if len(bot) > 0 {
-		out = append(out, missingGroup{name: "Bot Settings (config/feishu/bots.toml [bot.<account>])", items: bot})
+		out = append(out, missingGroup{name: "Bot Settings (config/feishu/bots.toml [bot.<account>], quote when account has dots/spaces)", items: bot})
 	}
 	if len(progress) > 0 {
-		out = append(out, missingGroup{name: "Progress Settings (config/feishu/bots.toml [bot.<account>])", items: progress})
+		out = append(out, missingGroup{name: "Progress Settings (config/feishu/bots.toml [bot.<account>], quote when account has dots/spaces)", items: progress})
 	}
 	if len(codex) > 0 {
 		out = append(out, missingGroup{name: "Codex Settings", items: codex})
@@ -328,8 +333,7 @@ func parseBool(s string) (bool, bool, error) {
 
 func parseInt(s string) (int, error) {
 	v := strings.TrimSpace(s)
-	var n int
-	_, err := fmt.Sscanf(v, "%d", &n)
+	n, err := strconv.Atoi(v)
 	if err != nil {
 		return 0, fmt.Errorf("invalid int: %q", s)
 	}
@@ -388,7 +392,11 @@ func inspectConfig(store *configstore.Store, account string) (*inspectResult, ma
 	if err != nil {
 		return nil, nil, err
 	}
-	secrets, err := store.ReadSecretsEntry("feishu", account)
+	defaultSecrets, err := store.ReadSecretsEntry("feishu", "default")
+	if err != nil {
+		return nil, nil, err
+	}
+	accountSecrets, err := store.ReadSecretsEntry("feishu", account)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -400,12 +408,16 @@ func inspectConfig(store *configstore.Store, account string) (*inspectResult, ma
 	if err != nil {
 		return nil, nil, err
 	}
-	effective := configstore.DeepMerge(secrets, overlay, map[string]any{
-		"sync": configstore.DeepMerge(syncDefault, syncAccount),
+	syncEffective := configstore.DeepMerge(syncDefault, syncAccount)
+	if strings.TrimSpace(renderPromptDefault(map[string]any{"sync": syncAccount}, "sync.workspace_id")) == "" {
+		setDotted(syncEffective, "workspace_id", defaultSyncWorkspaceID(account))
+	}
+	effective := configstore.DeepMerge(defaultSecrets, overlay, accountSecrets, map[string]any{
+		"sync": syncEffective,
 	})
 
 	res := &inspectResult{Account: account, Repo: store.RepoRoot}
-	res.Paths.AccountJSON = store.OverlayTargetLabel(account)
+	res.Paths.AccountConfig = store.OverlayTargetLabel(account)
 	res.Items = buildItems(account)
 	return res, effective, nil
 }

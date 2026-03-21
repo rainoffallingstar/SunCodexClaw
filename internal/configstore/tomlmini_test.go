@@ -103,6 +103,18 @@ func TestWriteOverlayCreatesBotTableInTOML(t *testing.T) {
 	}
 }
 
+func TestOverlayTargetLabelQuotesSpecialAccountNames(t *testing.T) {
+	store := NewStore("/repo")
+	got := store.OverlayTargetLabel("assistant.bot")
+	want := filepath.Join("/repo", "config", "feishu", "bots.toml") + ` [bot."assistant.bot"]`
+	if got != want {
+		t.Fatalf("OverlayTargetLabel() = %q, want %q", got, want)
+	}
+	if got := store.SecretsEntryLabel("feishu", "assistant.bot"); got != `[feishu."assistant.bot"]` {
+		t.Fatalf("SecretsEntryLabel() = %q, want quoted account", got)
+	}
+}
+
 func TestResolveRuntimeAccountFromDirUsesScopedRuntimeAccount(t *testing.T) {
 	tmp := t.TempDir()
 	workspace := filepath.Join(tmp, "workspace", "assistant", "nested")
@@ -202,6 +214,35 @@ func TestListEnabledAccountNamesFiltersDisabledBots(t *testing.T) {
 	want := []string{"assistant", "helper"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("enabled accounts = %v, want %v", got, want)
+	}
+}
+
+func TestReadOverlayDerivesCwdFromSanitizedAccountNamespace(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, "config", "feishu"), 0o755); err != nil {
+		t.Fatalf("mkdir feishu: %v", err)
+	}
+	body := strings.Join([]string{
+		"[shared.codex]",
+		"cwd_root = \"workspace\"",
+		"",
+		"[bot.\"assistant/bot\"]",
+		"bot_name = \"Assistant\"",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(tmp, "config", "feishu", "bots.toml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write bots.toml: %v", err)
+	}
+	store := NewStore(tmp)
+	got, err := store.ReadOverlay("assistant/bot")
+	if err != nil {
+		t.Fatalf("ReadOverlay: %v", err)
+	}
+	if got["bot_name"] != "Assistant" {
+		t.Fatalf("bot_name mismatch: %#v", got["bot_name"])
+	}
+	if getNestedString(got, "codex", "cwd") != "workspace/assistant-bot" {
+		t.Fatalf("codex.cwd = %q, want workspace/assistant-bot", getNestedString(got, "codex", "cwd"))
 	}
 }
 

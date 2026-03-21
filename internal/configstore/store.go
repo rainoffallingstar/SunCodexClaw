@@ -30,10 +30,18 @@ func (s *Store) LocalTOMLPath() string {
 }
 
 func (s *Store) OverlayTargetLabel(account string) string {
+	return s.OverlayTOMLPath() + " " + s.OverlayTableLabel(account)
+}
+
+func (s *Store) OverlayTableLabel(account string) string {
 	if strings.TrimSpace(account) == "" || strings.TrimSpace(account) == "default" {
-		return s.OverlayTOMLPath() + " [shared]"
+		return "[shared]"
 	}
-	return s.OverlayTOMLPath() + " [bot." + account + "]"
+	return "[" + FormatTOMLPath("bot", account) + "]"
+}
+
+func (s *Store) SecretsEntryLabel(section, account string) string {
+	return "[" + FormatTOMLPath(section, account) + "]"
 }
 
 func ResolveRuntimeAccountFromDir(dir, scope string) (string, string, error) {
@@ -78,6 +86,18 @@ func ResolveRuntimeAccountFromDir(dir, scope string) (string, string, error) {
 		current = parent
 	}
 	return "", "", nil
+}
+
+func AccountDirName(raw string) string {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return ""
+	}
+	text = strings.ReplaceAll(text, "\\", "-")
+	text = strings.ReplaceAll(text, "/", "-")
+	text = strings.ReplaceAll(text, " ", "-")
+	text = strings.Trim(text, "-.")
+	return text
 }
 
 func getNestedRuntimeConfigString(root *OMap, key string) string {
@@ -403,7 +423,11 @@ func applyDerivedBotConfig(account string, cfg map[string]any) map[string]any {
 	cwd := strings.TrimSpace(getNestedStringMap(out, "codex", "cwd"))
 	root := strings.TrimSpace(getNestedStringMap(out, "codex", "cwd_root"))
 	if cwd == "" && root != "" {
-		codex["cwd"] = filepath.ToSlash(filepath.Join(root, account))
+		derived := AccountDirName(account)
+		if derived == "" {
+			derived = account
+		}
+		codex["cwd"] = filepath.ToSlash(filepath.Join(root, derived))
 	}
 	if len(codex) > 0 {
 		out["codex"] = codex

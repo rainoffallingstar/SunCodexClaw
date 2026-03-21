@@ -1,6 +1,6 @@
 package configstore
 
-// OMap is a minimal ordered mapping used to preserve YAML key ordering.
+// OMap is a minimal ordered mapping used to preserve TOML key ordering.
 type OMap struct {
 	keys   []string
 	values map[string]any

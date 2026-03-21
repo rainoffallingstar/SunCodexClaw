@@ -344,6 +344,10 @@ func formatTOMLPath(parts []string) string {
 	return strings.Join(out, ".")
 }
 
+func FormatTOMLPath(parts ...string) string {
+	return formatTOMLPath(parts)
+}
+
 func isBareTOMLKey(s string) bool {
 	if s == "" {
 		return false

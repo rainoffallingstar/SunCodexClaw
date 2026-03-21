@@ -47,7 +47,7 @@ const DEFAULT_TIMER_SYSTEM_GUIDE = [
 const DEFAULT_MEMORY_SYSTEM_GUIDE = [
   '记忆系统：如果用户提到 /memory、记住、保存偏好、回忆历史约定，优先使用 `suncodexclawd memory ...` 管理内置 memory 系统。',
   '当前机器人的记忆默认写入独立记忆库，适合同一套服务运行多个机器人账号。',
-  '需要填写 `--account` 时，优先使用当前提示里明确给出的“当前机器人账号”；多机器人场景下，以当前加载的 `config/feishu/bots.toml` 中 `[bot.<account>]` 和启动参数 `--account <account>` 为准。',
+  '需要填写 `--account` 时，优先使用当前提示里明确给出的“当前机器人账号”；多机器人场景下，以当前加载的 `config/feishu/bots.toml` 中对应机器人表和启动参数 `--account <account>` 为准；如果账号名里有点号或空格，手工编辑 TOML 时记得给表名加引号。',
   '添加记忆使用 `suncodexclawd memory add --account <当前机器人账号> --text \"...\"`，检索使用 `suncodexclawd memory search <关键词> --account <当前机器人账号>`。',
   '如果当前命令运行在机器人工作目录里，也可以直接执行 `suncodexclawd memory list|search ...`，账号会从 `.config.toml` 自动识别。',
   '先用 `suncodexclawd memory search <关键词> --account <当前机器人账号>` 或 `suncodexclawd memory list --account <当前机器人账号>` 查看已有记忆，避免重复写入。',
@@ -153,8 +153,37 @@ function resolveOptionalDirList(value) {
   return out;
 }
 
+function requireRuntimeAccountName(accountName, message = 'missing runtime account name') {
+  const resolved = String(accountName || '').trim();
+  if (!resolved) {
+    throw new Error(message);
+  }
+  return resolved;
+}
+
+function sanitizeRuntimeNamespaceName(raw = '') {
+  return String(raw || '')
+    .trim()
+    .replaceAll('\\', '-')
+    .replaceAll('/', '-')
+    .replaceAll(' ', '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/^\.+|\.+$/g, '');
+}
+
+function isBareTomlKey(value = '') {
+  return /^[A-Za-z0-9_-]+$/.test(String(value || ''));
+}
+
+function formatTomlPath(parts = []) {
+  return parts.map((part) => {
+    const text = String(part || '');
+    return isBareTomlKey(text) ? text : JSON.stringify(text);
+  }).join('.');
+}
+
 function renderDefaultRuntimeDocs(accountName = '') {
-  const resolvedAccount = String(accountName || 'assistant').trim() || 'assistant';
+  const resolvedAccount = requireRuntimeAccountName(accountName, 'missing workspace account');
   return {
     'agent.md': [
     '# Agent',
@@ -178,9 +207,12 @@ function renderDefaultRuntimeDocs(accountName = '') {
     '- 定时任务：使用 `suncodexclawd timer list|show|upsert|update|run|logs|enable|disable|delete` 管理计划任务；在本目录可省略 `--account`',
     '- 文档同步：使用 `suncodexclawd sync status|list-remote|push|pull|restore` 备份或恢复 `agent.md`、`soul.md`、`heartbeats.md`；在本目录可省略 `--account`',
     '- 默认同步任务：首次启动当前工作目录时，SunCodexClaw 会自动创建 `workspace-doc-sync`，每 24 小时备份一次这 3 份核心文档',
-    '- 配置维护：使用 `suncodexclawd configure --account <bot>` 维护 `config/feishu/bots.toml` 与 `config/secrets/local.toml`',
-    '- Compose 模式：如果你在宿主机上工作，也可以给 `list/configure/timer/memory/sync` 加 `--docker-compose`；服务已运行时优先 `exec`，未运行时回退到 `run --rm`',
-    '- 自更新：使用 `suncodexclawd update --check` 检查更新，使用 `suncodexclawd update` 更新本地守护进程；如果是 Compose 部署，使用 `suncodexclawd update --docker-compose`',
+    '- 配置维护：使用 `suncodexclawd configure --account <bot>` 初始化配置，使用 `suncodexclawd configure edit --account <bot>` 回填或修改已有 TOML 配置',
+    '- 本机模式：默认就是本机模式；如果只是想显式声明这一点，也可以补 `--local`',
+    '- Compose 模式：如果你在宿主机上工作，也可以给 `list/configure/timer/memory/sync` 加 `--docker-compose`；服务已运行时优先 `exec`，未运行时会先 `pull`，只有拉取失败时才回退到 `run --rm --workdir /app --build`',
+    '- Compose 生命周期：`start|status|stop|restart|logs --docker-compose` 管理的是整个 `suncodexclaw` 容器服务，不按单个机器人账号筛选',
+    '- macOS 常驻：如果当前部署跑在 macOS 宿主机上，可用 `suncodexclawd launchagents install|status|uninstall --account <bot>` 管理 launchd 常驻；这属于本机模式能力，不走 `--docker-compose`',
+    '- 自更新：使用 `suncodexclawd update --check` 检查更新，使用 `suncodexclawd update` 更新本地守护进程；如果是 Compose 部署，使用 `suncodexclawd update --docker-compose`，不在项目根目录时补 `--project-dir <repo>`',
     '- 工作区文档：维护 `agent.md`、`soul.md`、`heartbeats.md`，把长期有效的设定沉淀到文件而不是只留在聊天记录里',
     '',
     '## 行动原则',
@@ -189,7 +221,8 @@ function renderDefaultRuntimeDocs(accountName = '') {
     '- 用户要求“记住”长期规则时，优先写入 memory 系统。',
     '- 用户要求周期执行、定时提醒、自动巡检时，优先使用 timer 系统。',
     `- 在当前工作目录里，优先使用 `.config.toml` 中的账号事实；若离开本目录或在仓库根目录执行命令，再显式补 \`--account ${resolvedAccount}\`。`,
-    '- 如果用户要启动或重启服务，先确认目标是当前机器人，还是所有 `enabled = true` 的机器人。',
+    '- 如果用户要启动、停止、查看状态或重启服务，先确认目标是当前机器人，还是整组机器人。',
+    '- 默认行为要记清：`start/preflight` 默认只处理 `enabled = true` 的机器人；`status/stop` 默认处理所有已配置机器人；`restart` 默认先停掉所有已配置机器人，再只启动 `enabled = true` 的机器人。',
     '- 如果配置了 WebDAV 文档同步，首次启动且文档缺失时，优先尝试 restore，再补默认模版。',
     '- 用户要求维护、升级、排障时，优先使用内置命令，而不是临时拼凑替代方案。',
     '- 如果安装了新的技能，要在 `heartbeats.md` 中记录技能名称、安装时间和用途。',
@@ -268,12 +301,14 @@ function renderRuntimeConfigToml(cwd, {
   config = {},
   repoRoot = path.resolve(__dirname, '..'),
 } = {}) {
-  const resolvedAccount = String(accountName || 'assistant').trim() || 'assistant';
+  const resolvedAccount = requireRuntimeAccountName(accountName, 'missing workspace account');
   const resolvedCwd = resolveOptionalDir(cwd);
   const configFile = String(configPath || resolveBotOverlayPath(path.join(repoRoot, 'config'))).trim();
-  const memoryLibrary = path.join(repoRoot, 'config', 'memory', 'libraries', resolvedAccount);
-  const timerNamespace = path.join(repoRoot, 'config', 'timers', resolvedAccount);
+  const accountNamespace = sanitizeRuntimeNamespaceName(resolvedAccount);
+  const memoryLibrary = path.join(repoRoot, 'config', 'memory', 'libraries', accountNamespace);
+  const timerNamespace = path.join(repoRoot, 'config', 'timers', accountNamespace);
   const syncWorkspaceID = resolveSyncWorkspaceID(resolvedAccount);
+  const configTable = `[${formatTomlPath(['bot', resolvedAccount])}]`;
   const botName = String(config.bot_name || '').trim();
   const mentionAliases = Array.isArray(config.mention_aliases) ? config.mention_aliases : [];
   const progressMode = String(config?.progress?.mode || '').trim();
@@ -284,8 +319,8 @@ function renderRuntimeConfigToml(cwd, {
     `name = ${JSON.stringify(botName)}`,
     `workspace_dir = ${JSON.stringify(resolvedCwd)}`,
     `config_file = ${JSON.stringify(configFile)}`,
-    `config_table = ${JSON.stringify(resolvedAccount === 'default' ? '[shared]' : `[bot.${resolvedAccount}]`)}`,
-    `config_json = ${JSON.stringify(configFile)}`,
+    `config_table = ${JSON.stringify(configTable)}`,
+    `config_target = ${JSON.stringify(String(`${configFile} ${configTable}`).trim())}`,
     '',
     '[repo]',
     `root = ${JSON.stringify(repoRoot)}`,
@@ -313,9 +348,9 @@ function renderRuntimeConfigToml(cwd, {
 }
 
 function listMissingRuntimeDocs(dir) {
-  const docs = renderDefaultRuntimeDocs();
+  const docs = ['agent.md', 'soul.md', 'heartbeats.md'];
   const missing = [];
-  for (const name of Object.keys(docs)) {
+  for (const name of docs) {
     if (!fs.existsSync(path.join(dir, name))) {
       missing.push(name);
     }
@@ -325,7 +360,7 @@ function listMissingRuntimeDocs(dir) {
 
 function tryRestoreRuntimeDocs(dir, { accountName = '' } = {}) {
   const repoRoot = path.resolve(__dirname, '..');
-  const account = String(accountName || 'assistant').trim() || 'assistant';
+  const account = requireRuntimeAccountName(accountName, 'missing workspace account');
   const result = spawnSync(resolveDaemonBin(), ['sync', 'restore', '--account', account, '--workspace', dir, '--repo', repoRoot], {
     cwd: repoRoot,
     encoding: 'utf8',
@@ -353,26 +388,31 @@ function tryRestoreRuntimeDocs(dir, { accountName = '' } = {}) {
 function defaultSyncWorkspaceID(accountName = '') {
   return String(accountName || '')
     .trim()
-    .replace(/[\/\\ .:]+/g, '-')
+    .replaceAll('/', '-')
+    .replaceAll('\\', '-')
+    .replaceAll(' ', '-')
+    .replaceAll(':', '-')
+    .replaceAll('.', '-')
     .replace(/^-+|-+$/g, '')
+    .replace(/^\.+|\.+$/g, '')
     || 'default';
 }
 
 function resolveSyncWorkspaceConfig(accountName = '') {
-  const resolvedAccount = String(accountName || 'assistant').trim() || 'assistant';
+  const resolvedAccount = requireRuntimeAccountName(accountName, 'missing workspace account');
   const syncDefault = asPlainObject(readConfigEntry('sync', 'default', {}));
   const syncAccount = asPlainObject(readConfigEntry('sync', resolvedAccount, {}));
   return deepMerge(syncDefault, syncAccount);
 }
 
 function resolveSyncWorkspaceID(accountName = '') {
-  const resolvedAccount = String(accountName || 'assistant').trim() || 'assistant';
-  const syncConfig = resolveSyncWorkspaceConfig(resolvedAccount);
-  return String(syncConfig.workspace_id || defaultSyncWorkspaceID(resolvedAccount)).trim() || defaultSyncWorkspaceID(resolvedAccount);
+  const resolvedAccount = requireRuntimeAccountName(accountName, 'missing workspace account');
+  const syncAccount = asPlainObject(readConfigEntry('sync', resolvedAccount, {}));
+  return String(syncAccount.workspace_id || defaultSyncWorkspaceID(resolvedAccount)).trim() || defaultSyncWorkspaceID(resolvedAccount);
 }
 
 function ensureDefaultWorkspaceSyncTask(cwd, { accountName = '', repoRoot = path.resolve(__dirname, '..') } = {}) {
-  const resolvedAccount = String(accountName || 'assistant').trim() || 'assistant';
+  const resolvedAccount = requireRuntimeAccountName(accountName, 'missing workspace account');
   const resolvedCwd = resolveOptionalDir(cwd);
   if (!resolvedCwd) {
     return {
@@ -383,7 +423,7 @@ function ensureDefaultWorkspaceSyncTask(cwd, { accountName = '', repoRoot = path
     };
   }
   const taskID = 'workspace-doc-sync';
-  const taskDir = path.join(repoRoot, 'config', 'timers', resolvedAccount);
+  const taskDir = path.join(repoRoot, 'config', 'timers', sanitizeRuntimeNamespaceName(resolvedAccount));
   const taskPath = path.join(taskDir, `${taskID}.json`);
   if (fs.existsSync(taskPath)) {
     return {
@@ -420,7 +460,6 @@ function ensureDefaultWorkspaceSyncTask(cwd, { accountName = '', repoRoot = path
 }
 
 function ensureRuntimeWorkspace(cwd, { accountName = '', configPath = '', config = {} } = {}) {
-  const runtimeDocs = renderDefaultRuntimeDocs(accountName);
   const dir = resolveOptionalDir(cwd);
   if (!dir) {
     return {
@@ -437,10 +476,12 @@ function ensureRuntimeWorkspace(cwd, { accountName = '', configPath = '', config
       defaultSyncTaskID: '',
     };
   }
+  const resolvedAccount = requireRuntimeAccountName(accountName, 'missing workspace account');
+  const runtimeDocs = renderDefaultRuntimeDocs(resolvedAccount);
   fs.mkdirSync(dir, { recursive: true });
   const runtimeConfigPath = path.join(dir, '.config.toml');
   fs.writeFileSync(runtimeConfigPath, `${renderRuntimeConfigToml(dir, {
-    accountName,
+    accountName: resolvedAccount,
     configPath: String(configPath || '').trim() ? configPath : '',
     config,
   })}\n`, 'utf8');
@@ -468,7 +509,7 @@ function ensureRuntimeWorkspace(cwd, { accountName = '', configPath = '', config
   };
   let restoredDocs = [];
   if (missingBeforeRestore.length > 0) {
-    restoreResult = tryRestoreRuntimeDocs(dir, { accountName });
+    restoreResult = tryRestoreRuntimeDocs(dir, { accountName: resolvedAccount });
     const missingAfterRestore = listMissingRuntimeDocs(dir);
     restoredDocs = missingBeforeRestore.filter((name) => !missingAfterRestore.includes(name));
   }
@@ -479,7 +520,7 @@ function ensureRuntimeWorkspace(cwd, { accountName = '', configPath = '', config
     fs.writeFileSync(target, content, 'utf8');
     created.push(target);
   }
-  const syncTask = ensureDefaultWorkspaceSyncTask(dir, { accountName });
+  const syncTask = ensureDefaultWorkspaceSyncTask(dir, { accountName: resolvedAccount });
   return {
     configPath: runtimeConfigPath,
     configWritten: true,
@@ -546,11 +587,11 @@ function loadFeishuConfig(accountName, configDir) {
   const secretConfig = readConfigEntry('feishu', chosen, {});
   ensure(
     Object.keys(accountOverlay).length > 0 || Object.keys(secretConfig).length > 0,
-    `feishu config not found: ${overlay.path} [bot.${chosen}] or ${resolveSecretsFile()} [feishu.${chosen}]`
+    `feishu config not found: ${overlay.path} [${formatTomlPath(['bot', chosen])}] or ${resolveSecretsFile()} [${formatTomlPath(['feishu', chosen])}]`
   );
   return {
     accountName: chosen,
-    config: applyDerivedBotConfig(chosen, deepMerge(defaultConfig, secretConfig, accountOverlay)),
+    config: applyDerivedBotConfig(chosen, deepMerge(defaultConfig, accountOverlay, secretConfig)),
     configPath: overlay.path,
   };
 }
@@ -563,7 +604,8 @@ function applyDerivedBotConfig(accountName, config) {
   const cwd = String(codex.cwd || '').trim();
   const root = String(codex.cwd_root || '').trim();
   if (!cwd && root) {
-    merged.codex = deepMerge(codex, { cwd: path.posix.join(root.replace(/\\/g, '/'), account) });
+    const derived = sanitizeRuntimeNamespaceName(account) || account;
+    merged.codex = deepMerge(codex, { cwd: path.posix.join(root.replace(/\\/g, '/'), derived) });
   }
   return merged;
 }
@@ -1085,29 +1127,12 @@ function parseMentionAliasList(rawValue) {
   return [];
 }
 
-function extractSystemPromptAliases(rawText) {
-  const text = String(rawText || '');
-  if (!text) return [];
-  const aliases = [];
-
-  for (const match of text.matchAll(/[“"]([^”"\n]{1,80})[”"]/g)) {
-    if (match[1]) aliases.push(match[1]);
-  }
-
-  const firstLine = text.split(/\r?\n/, 1)[0] || '';
-  const simpleMatch = firstLine.match(/你是[“"]?([^”"，。\n]{1,80})/);
-  if (simpleMatch && simpleMatch[1]) aliases.push(simpleMatch[1]);
-
-  return aliases;
-}
-
 function resolveMentionAliases({ botName = '', explicitAliases = [], replyPrefix = '', systemPrompt = '', progressTitlePrefix = '' }) {
   const aliases = uniqueStrings([
     botName,
     ...parseMentionAliasList(explicitAliases),
     replyPrefix,
     progressTitlePrefix,
-    ...extractSystemPromptAliases(systemPrompt),
   ].map((item) => normalizeMentionAlias(item)).filter(Boolean));
 
   return aliases.sort((a, b) => b.length - a.length);
@@ -2542,7 +2567,11 @@ function formatTimerHelp() {
     '',
     '复杂创建或修改也可以直接发自然语言，例如：',
     '/timer 把 daily-report 改成每天 10:30 执行，并把任务内容改成检查当前工作目录后发回当前会话',
-    '/timer 创建一个每天 09:00 执行的日报任务，目录 workspace/assistant，结果发回当前会话',
+    '/timer 创建一个每天 09:00 执行的日报任务，目录 workspace/<account-namespace>，结果发回当前会话',
+    '',
+    '说明：',
+    '/timer 默认操作当前机器人账号的定时任务。',
+    '/timer 自然语言创建任务时，默认把结果发回当前会话。',
   ].join('\n');
 }
 
@@ -2560,7 +2589,8 @@ function formatMemoryHelp() {
     '/memory 以后默认用简体中文回复',
     '/memory search 中文',
     '',
-    '说明：当前机器人账号会使用自己的独立记忆库。',
+    '说明：',
+    '/memory 默认操作当前机器人账号自己的独立记忆库。',
   ].join('\n');
 }
 
@@ -2577,6 +2607,7 @@ function formatSyncHelp() {
     '说明：',
     '/sync 默认操作当前机器人账号的同步配置。',
     '/sync pull 会把远端文档拉到本地恢复目录，不直接覆盖工作区。',
+    '/sync pull 默认落到 .runtime/sync/restore/<account-namespace>/<snapshot>。',
     '/sync restore 默认只补缺失文档；显式覆盖时才会使用 force 模式。',
   ].join('\n');
 }
@@ -2664,7 +2695,7 @@ function runSyncAdminCommand(args = [], { timeoutMs = 60000 } = {}) {
 
 function handleTimerCommand(command, { accountName = '' } = {}) {
   if (!command) return { handled: false, reply: '' };
-  const account = String(accountName || 'assistant').trim() || 'assistant';
+  const account = requireRuntimeAccountName(accountName);
   if (command.type === 'help') {
     return { handled: true, reply: formatTimerHelp() };
   }
@@ -2693,18 +2724,19 @@ function handleTimerCommand(command, { accountName = '' } = {}) {
 
 function handleMemoryCommand(command, { accountName = '', chatID = '' } = {}) {
   if (!command) return { handled: false, reply: '' };
+  const account = requireRuntimeAccountName(accountName);
   if (command.type === 'help') {
     return { handled: true, reply: formatMemoryHelp() };
   }
   if (command.type === 'list') {
-    return { handled: true, reply: runMemoryAdminCommand(['list', '--account', accountName || 'assistant']) };
+    return { handled: true, reply: runMemoryAdminCommand(['list', '--account', account]) };
   }
   if (command.type === 'search') {
     const query = String(command.query || '').trim();
     if (!query) {
       return { handled: true, reply: '缺少搜索关键词。请用 /memory help 查看命令格式。' };
     }
-    return { handled: true, reply: runMemoryAdminCommand(['search', '--account', accountName || 'assistant', query]) };
+    return { handled: true, reply: runMemoryAdminCommand(['search', '--account', account, query]) };
   }
   if (command.type === 'add') {
     const text = String(command.text || '').trim();
@@ -2712,11 +2744,11 @@ function handleMemoryCommand(command, { accountName = '', chatID = '' } = {}) {
       return { handled: true, reply: '缺少记忆内容。请用 /memory help 查看命令格式。' };
     }
     const sourceParts = ['feishu'];
-    if (String(accountName || '').trim()) sourceParts.push(String(accountName || '').trim());
+    if (account) sourceParts.push(account);
     if (String(chatID || '').trim()) sourceParts.push(String(chatID || '').trim());
     return {
       handled: true,
-      reply: runMemoryAdminCommand(['add', '--account', accountName || 'assistant', '--text', text, '--source', sourceParts.join('/')]),
+      reply: runMemoryAdminCommand(['add', '--account', account, '--text', text, '--source', sourceParts.join('/')]),
     };
   }
   const target = String(command.target || '').trim();
@@ -2724,8 +2756,8 @@ function handleMemoryCommand(command, { accountName = '', chatID = '' } = {}) {
     return { handled: true, reply: '缺少记忆 ID。请用 /memory help 查看命令格式。' };
   }
   const argsByType = {
-    show: ['show', '--account', accountName || 'assistant', target],
-    delete: ['delete', '--account', accountName || 'assistant', target],
+    show: ['show', '--account', account, target],
+    delete: ['delete', '--account', account, target],
   };
   const args = argsByType[command.type];
   if (!args) return { handled: false, reply: '' };
@@ -2737,7 +2769,7 @@ function handleMemoryCommand(command, { accountName = '', chatID = '' } = {}) {
 
 function handleSyncCommand(command, { accountName = '' } = {}) {
   if (!command) return { handled: false, reply: '' };
-  const account = String(accountName || 'assistant').trim() || 'assistant';
+  const account = requireRuntimeAccountName(accountName);
   if (command.type === 'help') {
     return { handled: true, reply: formatSyncHelp() };
   }
@@ -2753,12 +2785,13 @@ function handleSyncCommand(command, { accountName = '' } = {}) {
   if (command.type === 'pull') {
     const snapshot = String(command.snapshot || 'latest').trim() || 'latest';
     const safeSnapshot = snapshot.replace(/[\\/:\s]+/g, '-');
-    const targetDir = path.join('.runtime', 'sync', 'restore', safeSnapshot);
+    const safeAccount = account.replace(/[\\/:\s]+/g, '-');
+    const targetDir = path.join('.runtime', 'sync', 'restore', safeAccount, safeSnapshot);
     return { handled: true, reply: runSyncAdminCommand(['pull', '--account', account, '--snapshot', snapshot, '--to', targetDir]) };
   }
   if (command.type === 'restore') {
     const snapshot = String(command.snapshot || 'latest').trim() || 'latest';
-    return { handled: true, reply: runSyncAdminCommand(['restore', '--account', account, '--snapshot', snapshot, '--force']) };
+    return { handled: true, reply: runSyncAdminCommand(['restore', '--account', account, '--snapshot', snapshot]) };
   }
   return { handled: false, reply: '' };
 }
@@ -3296,9 +3329,9 @@ async function generateCodexReply({
   }
   if (runtimeWorkspace.restoreAttempted) {
     if (runtimeWorkspace.restoreSucceeded) {
-      console.log(`runtime_sync_restore=ok account=${accountName || 'assistant'} docs=${runtimeWorkspace.restoredDocs.join(' | ') || '(none)'} message=${runtimeWorkspace.restoreOutput || 'ok'}`);
+      console.log(`runtime_sync_restore=ok account=${accountName} docs=${runtimeWorkspace.restoredDocs.join(' | ') || '(none)'} message=${runtimeWorkspace.restoreOutput || 'ok'}`);
     } else {
-      console.log(`runtime_sync_restore=skip account=${accountName || 'assistant'} message=${runtimeWorkspace.restoreOutput || 'not_restored'}`);
+      console.log(`runtime_sync_restore=skip account=${accountName} message=${runtimeWorkspace.restoreOutput || 'not_restored'}`);
     }
   }
   if (runtimeWorkspace.createdDocs.length > 0) {
@@ -4863,9 +4896,9 @@ async function main() {
   }
   if (startupWorkspace.restoreAttempted) {
     if (startupWorkspace.restoreSucceeded) {
-      console.log(`runtime_sync_restore=ok account=${accountName || 'assistant'} docs=${startupWorkspace.restoredDocs.join(' | ') || '(none)'} message=${startupWorkspace.restoreOutput || 'ok'}`);
+      console.log(`runtime_sync_restore=ok account=${accountName} docs=${startupWorkspace.restoredDocs.join(' | ') || '(none)'} message=${startupWorkspace.restoreOutput || 'ok'}`);
     } else {
-      console.log(`runtime_sync_restore=skip account=${accountName || 'assistant'} message=${startupWorkspace.restoreOutput || 'not_restored'}`);
+      console.log(`runtime_sync_restore=skip account=${accountName} message=${startupWorkspace.restoreOutput || 'not_restored'}`);
     }
   }
   if (startupWorkspace.createdDocs.length > 0) {

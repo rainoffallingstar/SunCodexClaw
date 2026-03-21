@@ -7,8 +7,6 @@
   "scripts": {
     "go:configure": "GOCACHE=/tmp/suncodexclaw-gocache GOMODCACHE=/tmp/suncodexclaw-gomodcache go run ./cmd/suncodexclawd configure",
     "go:build": "bash tools/build_go_bins.sh",
-    "feishu:ws": "node tools/feishu_ws_bot.js --account default",
-    "feishu:ws:dry": "node tools/feishu_ws_bot.js --account default --dry-run",
     "feishu:ctl": "node -e \"console.error('use ./bin/suncodexclawd directly; example: ./bin/suncodexclawd status')\" && exit 1",
     "feishu:start": "./bin/suncodexclawd start",
     "feishu:stop": "./bin/suncodexclawd stop",
@@ -19,7 +17,6 @@
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.59.0",
-    "ffmpeg-static": "^5.3.0",
-    "yaml": "^2.8.2"
+    "ffmpeg-static": "^5.3.0"
   }
 }

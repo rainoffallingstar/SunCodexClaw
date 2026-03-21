@@ -1,9 +1,13 @@
 package supervisor
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestStatusInfosShowsLastErrorWhenStopped(t *testing.T) {
@@ -124,5 +128,107 @@ func TestDiscoverAccountsReturnsEnabledBotsOnly(t *testing.T) {
 	}
 	if len(all) != 2 {
 		t.Fatalf("DiscoverAllAccounts() = %v, want two accounts", all)
+	}
+}
+
+func TestRuntimeCommandUsesGoBackend(t *testing.T) {
+	s := New(Options{RepoRoot: "/repo", RuntimeBackend: "go"})
+	cmd, err := s.runtimeCommand(context.Background(), "assistant", true, "/repo/config/timers/assistant/daily.json")
+	if err != nil {
+		t.Fatalf("runtimeCommand() error = %v", err)
+	}
+	if got := filepath.Base(cmd.Path); got != filepath.Base(os.Args[0]) {
+		t.Fatalf("cmd.Path = %q, want current executable", cmd.Path)
+	}
+	joined := strings.Join(cmd.Args, " ")
+	if !strings.Contains(joined, "feishu-run --repo /repo --account assistant --dry-run --timer-task-file /repo/config/timers/assistant/daily.json") {
+		t.Fatalf("unexpected args: %v", cmd.Args)
+	}
+}
+
+func TestRuntimeCommandUsesJSBackend(t *testing.T) {
+	s := New(Options{RepoRoot: "/repo", NodeBin: "node", RuntimeBackend: "js"})
+	cmd, err := s.runtimeCommand(context.Background(), "assistant", false, "")
+	if err != nil {
+		t.Fatalf("runtimeCommand() error = %v", err)
+	}
+	if got := filepath.Base(cmd.Path); got != "node" {
+		t.Fatalf("cmd.Path = %q, want basename node", cmd.Path)
+	}
+	joined := strings.Join(cmd.Args, " ")
+	if !strings.Contains(joined, "/repo/tools/feishu_ws_bot.js --account assistant") {
+		t.Fatalf("unexpected args: %v", cmd.Args)
+	}
+}
+
+func TestFormatSupervisorSpawnedLine(t *testing.T) {
+	ts := time.Date(2026, 3, 20, 12, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	line := formatSupervisorSpawnedLine(ts, "assistant", "go", 4321, []string{"suncodexclawd", "feishu-run", "--account", "assistant"})
+	for _, want := range []string{
+		"supervisor_spawned",
+		"account=assistant",
+		"runtime_backend=go",
+		"pid=4321",
+		"cmd=suncodexclawd feishu-run --account assistant",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("line %q missing %q", line, want)
+		}
+	}
+}
+
+func TestFormatSupervisorExitLine(t *testing.T) {
+	ts := time.Date(2026, 3, 20, 12, 1, 0, 0, time.UTC)
+	line := formatSupervisorExitLine(ts, "assistant", "js", 17, true, 2*time.Second)
+	for _, want := range []string{
+		"supervisor_exit",
+		"account=assistant",
+		"runtime_backend=js",
+		"exit_code=17",
+		"auto_restart=true",
+		"retry_in=2s",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("line %q missing %q", line, want)
+		}
+	}
+}
+
+func TestSupervisorAccountNamespaceSanitizesRuntimePaths(t *testing.T) {
+	s := New(Options{RepoRoot: "/repo"})
+	if got := supervisorAccountNamespace("assistant bot"); got != "assistant-bot" {
+		t.Fatalf("supervisorAccountNamespace() = %q, want assistant-bot", got)
+	}
+	if got := s.pidFile("assistant bot"); got != filepath.Join("/repo", ".runtime", "feishu", "pids", "assistant-bot.pid") {
+		t.Fatalf("pidFile() = %q", got)
+	}
+	if got := s.logFile("assistant bot"); got != filepath.Join("/repo", ".runtime", "feishu", "logs", "assistant-bot.log") {
+		t.Fatalf("logFile() = %q", got)
+	}
+	if got := s.errFile("assistant bot"); got != filepath.Join("/repo", ".runtime", "feishu", "errors", "assistant-bot.err") {
+		t.Fatalf("errFile() = %q", got)
+	}
+}
+
+func TestLaunchctlLabelUsesSanitizedAccountNamespace(t *testing.T) {
+	s := New(Options{RepoRoot: "/repo"})
+	if got := s.launchctlLabel("assistant bot"); got != "com.sunbelife.suncodexclaw.feishu.assistant-bot" {
+		t.Fatalf("launchctlLabel() = %q, want sanitized suffix", got)
+	}
+}
+
+func TestFormatSupervisorSpawnErrorLine(t *testing.T) {
+	ts := time.Date(2026, 3, 20, 12, 2, 0, 0, time.UTC)
+	line := formatSupervisorSpawnErrorLine(ts, "assistant", "go", errors.New("boom\nwith detail"), 1500*time.Millisecond)
+	for _, want := range []string{
+		"supervisor_spawn_error",
+		"account=assistant",
+		"runtime_backend=go",
+		"error=boom with detail",
+		"retry_in=1.5s",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("line %q missing %q", line, want)
+		}
 	}
 }

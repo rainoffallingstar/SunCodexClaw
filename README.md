@@ -7,14 +7,18 @@
 - 业务配置只认两个 TOML 文件
 - 默认本机直接运行
 - 只有显式加 `--docker-compose` 时才走 Docker Compose
-- `start/restart/status/stop/preflight` 不带 `--account` 时默认处理所有 `enabled = true` 的机器人
+- 如果你想把“本机模式”写得更明确，也可以显式加 `--local`
+- 本机模式下，`start/preflight` 不带 `--account` 时默认处理所有 `enabled = true` 的机器人
+- 本机模式下，`status/stop` 不带 `--account` 时默认处理所有已配置机器人，包括 `enabled = false` 但仍有状态残留的机器人
+- 本机模式下，`restart` 不带 `--account` 时会先停止所有已配置机器人，再只启动 `enabled = true` 的机器人
+- Compose 模式下，`start/status/stop/restart/logs` 操作的是整个 `suncodexclaw` 容器服务，不按单个账号筛选
 - `list/configure/timer/memory/sync` 也支持 `--docker-compose`
 - `list` 会列出所有已配置机器人及其 `enabled/disabled` 状态
 - `timer/memory/sync` 这类账号作用域命令在仓库根目录下建议显式带 `--account`，在机器人工作目录中可依赖 `.config.toml` 自动判定
 
 ## 你需要准备
 
-- Node.js 20+
+- Node.js 20+（仅当你使用兼容版 JS 运行时）
 - Go 1.22+（如果你要本地编译 `suncodexclawd`）
 - Docker / Docker Compose（仅当你要用容器部署时）
 - 一个飞书企业自建应用
@@ -139,9 +143,11 @@ SunCodexClaw 现在只认这两个业务配置文件：
 - `config/feishu/bots.toml`
   - 共享运行配置放在 `[shared]`
   - 每个机器人自己的非敏感覆盖项放在 `[bot.<account>]`
+  - 如果账号名里包含 `.`、空格等特殊字符，手工编辑时应写成 `[bot."your account"]`
   - 每个机器人可单独配置 `enabled = true|false`，默认 `true`
 - `config/secrets/local.toml`
   - 飞书凭据、Codex/OpenAI 密钥、WebDAV 等敏感配置
+  - 同理，账号名包含特殊字符时，使用 `[feishu."your account"]`、`[sync."your account"]`
 
 优先级规则：
 
@@ -203,41 +209,50 @@ cp config/secrets/local.example.toml config/secrets/local.toml
 
 - `.env` 只给 `docker compose` 做变量替换，不承载业务配置
 - 默认共享工作区根目录建议写成相对路径 `workspace`
-- 如果只配置了 `shared.codex.cwd_root = "workspace"`，每个机器人会自动派生自己的工作目录 `workspace/<account>`
+- 如果只配置了 `shared.codex.cwd_root = "workspace"`，每个机器人会自动派生自己的工作目录 `workspace/<account-namespace>`
+- `<account-namespace>` 是账号名按本地目录规则清洗后的结果，例如空格和斜杠会转成 `-`
 - 这样同一份配置可以同时兼容本机模式和 Docker Compose 模式
 
 ### 3. 初始化配置
 
 ```bash
-suncodexclawd configure --account assistant
+suncodexclawd configure --account <account>
 ```
 
 追加第二个机器人：
 
 ```bash
-suncodexclawd configure add --account reviewer
+suncodexclawd configure add --account <another-account>
+```
+
+编辑已有机器人：
+
+```bash
+suncodexclawd configure edit --account <account>
 ```
 
 `configure` 的行为：
 
 - 直接对 `config/feishu/bots.toml` 与 `config/secrets/local.toml` 做交互式 add/edit
 - 已有值会作为默认值回显，直接回车即可保留
+- 使用 `--yes` 时会自动接受当前值或推荐默认值，适合快速初始化
 - 不再生成容器内配置文件
 - 不再从环境变量导入业务配置
-- 如果你更习惯宿主机只保留 Compose，也可以执行 `suncodexclawd configure --docker-compose --account assistant`
+- 如果你更习惯宿主机只保留 Compose，也可以执行 `suncodexclawd configure --docker-compose --account <account>`
 
 ### 4. 预检查
 
 本机模式：
 
 ```bash
-suncodexclawd preflight --account assistant
+suncodexclawd preflight --account <account>
+suncodexclawd preflight --account <account> --runtime-backend go
 ```
 
 容器模式：
 
 ```bash
-suncodexclawd preflight --docker-compose --account assistant
+suncodexclawd preflight --docker-compose --account <account>
 ```
 
 ### 5. 启动
@@ -246,26 +261,51 @@ suncodexclawd preflight --docker-compose --account assistant
 
 ```bash
 suncodexclawd start
-suncodexclawd logs --account assistant -f
+suncodexclawd start --runtime-backend go
+suncodexclawd logs --account <account> -f
 ```
 
 如果你要用 Docker Compose，显式加 `--docker-compose`：
 
 ```bash
 suncodexclawd start --docker-compose
+suncodexclawd status --docker-compose
+suncodexclawd logs --docker-compose -f
+```
+
+如果你要让 Compose 服务切到 Go native 后端，先把 `.env` 中的 `SUNCODEXCLAW_FEISHU_RUNTIME=go` 写好，再执行：
+
+```bash
+suncodexclawd restart --docker-compose
 ```
 
 说明：
 
 - `start/restart/status/stop/logs/preflight` 默认都按本机模式执行
-- `start/restart/status/stop/preflight` 不带 `--account` 时，会处理 `bots.toml` 中所有 `enabled = true` 的机器人
+- `--runtime-backend go` 会切到 Go native 飞书运行时；`--runtime-backend js` 使用原有 JS 兼容运行时
+- 当前仍建议默认保留 `js` 作为最兼容后端；Go native 已支持 dry-run、工作区初始化、WebSocket 收消息、文本/文件/图片/语音消息处理、`post` 富文本里的嵌图读取、附件回传指令、`/timer` `/memory` `/sync` `/thread` 命令、多线程本地上下文、消息级进度提示、typing reaction、fake stream、`progress.mode=doc` 的飞书文档进度页，以及 timer 任务里的附件回传
+- Go native 的 `progress.mode=doc` 当前会创建文档、写入任务概览/用户消息/最终回复、尝试分享给当前会话并设置链接范围；更细颗粒度的事件流式进度仍以 JS backend 更完整
+- Go native 现已读取 `codex exec --json` 事件流，并把常见的 `thread/turn/item/command/raw/error` 事件写入消息进度或 doc 进度
+- 本机模式下，`start/preflight` 不带 `--account` 时，会处理 `bots.toml` 中所有 `enabled = true` 的机器人
+- 本机模式下，`status/stop` 不带 `--account` 时，会处理所有已配置机器人，便于发现或停止已经被禁用但仍有残留进程/日志状态的机器人
+- 本机模式下，`restart` 不带 `--account` 时，会先停止所有已配置机器人，再只启动 `enabled = true` 的机器人
 - 如果某个机器人暂时不想启动，直接在 `[bot.<account>]` 下设置 `enabled = false`
 - `list/configure/timer/memory/sync` 也支持显式 `--docker-compose`
 - 这些工具型命令在 Compose 模式下会优先执行 `docker compose exec suncodexclaw suncodexclawd <subcommand> ...`
-- 如果 Compose 服务还没启动，再回退到 `docker compose run --rm suncodexclaw <subcommand> ...`
-- `start --docker-compose` 会执行 `docker compose up -d --build`
-- `restart --docker-compose` 会执行 `docker compose up -d --build --force-recreate`
-- `update --docker-compose` 会重建并重启容器服务
+- 如果 Compose 服务还没启动，会先尝试 `docker compose pull suncodexclaw` 后再执行 `docker compose run --rm --workdir /app suncodexclaw <subcommand> ...`
+- 只有拉取失败时，才会回退到 `docker compose run --rm --workdir /app --build suncodexclaw <subcommand> ...`
+- 这些工具型命令进入容器后会统一使用容器内的 `/app` 作为 repo 根，不依赖宿主机路径
+- `start/status/stop/restart/logs --docker-compose` 管理的是整个 Compose 服务，不支持 `--account`
+- 当前 `docker-compose.yml` 同时声明了 `image` 和 `build`；因此 `start/restart/update --docker-compose` 会默认先 `docker compose pull suncodexclaw`
+- 如果拉取成功，再直接启动/刷新服务；只有拉取失败时，才回退到本地 `Dockerfile` 构建
+- `start --docker-compose` 会执行“先 pull，失败再 `docker compose up -d --build` 回退”的策略
+- `status --docker-compose` 等价于 `docker compose ps`
+- `logs --docker-compose` 等价于 `docker compose logs suncodexclaw`
+- `stop --docker-compose` 等价于 `docker compose down`
+- `restart --docker-compose` 会执行“先 pull，失败再 `docker compose up -d --build --force-recreate` 回退”的策略
+- `update --docker-compose` 会执行同样的“pull 优先，build 回退”刷新策略
+- 如果 Compose 项目不在当前目录，使用 `update --docker-compose --project-dir /path/to/SunCodexClaw`
+- `update --docker-compose` 不接受二进制更新模式下的 `--repo/--version/--bin/--check/--dry-run`
 - 如果本机没有 `docker`，显式使用 `--docker-compose` 会直接报错退出
 
 ## 运行模式
@@ -281,17 +321,20 @@ suncodexclawd start --docker-compose
 - 仅在显式使用 `--docker-compose` 时启用
 - Compose 会挂载 `config/`、`.runtime/`、`.codex/` 和 `workspace/`
 - 容器内执行 `suncodexclawd start` 时仍然按默认本机模式启动，不会再套一层 Docker
+- Compose 可通过 `.env` 中的 `SUNCODEXCLAW_FEISHU_RUNTIME=js|go` 选择容器内运行后端
 - 默认会把宿主机的 `WORKSPACE_PATH` 挂到容器内 `/app/workspace`，因此推荐把 `shared.codex.cwd_root` 配成相对路径 `workspace`
 
 `.env.example` 只包含 Compose 相关变量，例如：
 
 ```dotenv
-GITHUB_REPOSITORY=rainoffallingstar/suncodexclaw
+IMAGE_REPOSITORY=rainoffallingstar/suncodexclaw
 IMAGE_TAG=main
 WORKSPACE_PATH=./workspace
 HEALTH_PORT=8080
 SUNCODEXCLAW_UID=1000
 SUNCODEXCLAW_GID=1000
+SUNCODEXCLAW_FEISHU_RUNTIME=js
+# CODEX_NPM_PKG=@openai/codex
 ```
 
 ## 多机器人
@@ -301,15 +344,16 @@ SUNCODEXCLAW_GID=1000
 规则：
 
 - `config/feishu/bots.toml` 中每个 `[bot.<account>]` 代表一个机器人
-- 账号作用域命令始终显式使用 `--account <account>`
-- 这条规则在单机器人场景下也成立
+- 在仓库根目录执行 `timer/memory/sync` 这类账号作用域命令时，推荐显式使用 `--account <account>`
+- 如果当前 shell 已经位于某个机器人的工作目录中，可以依赖 `.config.toml` 自动识别该账号
+- 这条习惯在单机器人场景下也同样适用
 
 推荐习惯：
 
-- `suncodexclawd start --account assistant`
-- `suncodexclawd timer list --account assistant`
-- `suncodexclawd memory search 中文 --account assistant`
-- `suncodexclawd sync push --account assistant`
+- `suncodexclawd start --account <account>`
+- `suncodexclawd timer list --account <account>`
+- `suncodexclawd memory search 中文 --account <account>`
+- `suncodexclawd sync push --account <account>`
 
 ## 工作区初始化
 
@@ -321,6 +365,7 @@ SUNCODEXCLAW_GID=1000
 - 如果已配置 WebDAV，同步系统会先尝试 `sync restore`
 - restore 没补齐的文件，才会按默认模板创建
 - 自动创建当前机器人的默认文档同步任务 `workspace-doc-sync`
+  - 该任务会沿用当前机器人实际生效的 `sync.workspace_id`
 
 `.config.toml` 会记录：
 
@@ -328,6 +373,7 @@ SUNCODEXCLAW_GID=1000
 - 当前工作目录
 - 相关配置文件路径
 - 当前目录对应的 `timer/memory/sync` 账号作用域
+- 当前生效的 `sync_workspace_id`
 
 ## 默认生成的运行文档
 
@@ -351,6 +397,7 @@ SUNCODEXCLAW_GID=1000
 - `agent.md` 会明确说明本目录绑定单一机器人账号
 - `agent.md` 会说明 `timer/memory/sync` 在本目录可直接依赖 `.config.toml` 识别账号
 - `agent.md` 会说明 `list/configure/timer/memory/sync` 支持 `--docker-compose`
+- `agent.md` 会说明 `configure edit`、显式 `--local`、以及 `launchagents`/`update` 的使用边界
 - `heartbeats.md` 会提醒记录新安装的技能
 
 ## 常用命令
@@ -359,30 +406,34 @@ SUNCODEXCLAW_GID=1000
 
 ```bash
 suncodexclawd list
-suncodexclawd status --account assistant
-suncodexclawd logs --account assistant -f
-suncodexclawd restart --account assistant
-suncodexclawd memory search 中文 --account assistant
-suncodexclawd sync status --account assistant
+suncodexclawd status --local --account <account>
+suncodexclawd status --account <account>
+suncodexclawd logs --account <account> -f
+suncodexclawd restart --account <account>
+suncodexclawd configure edit --account <account>
+suncodexclawd launchagents status --account <account>
+suncodexclawd memory search 中文 --account <account>
+suncodexclawd sync status --account <account>
 suncodexclawd update --check
 ```
 
 如果服务已经跑在 Compose 里，也可以直接进容器执行：
 
 ```bash
-docker compose exec suncodexclaw suncodexclawd status --account assistant
-docker compose exec suncodexclaw suncodexclawd logs --account assistant -f
-docker compose exec suncodexclaw suncodexclawd memory list --account assistant
+docker compose exec suncodexclaw suncodexclawd status --account <account>
+docker compose logs -f suncodexclaw
+docker compose exec suncodexclaw suncodexclawd memory list --account <account>
 ```
 
 如果你希望统一从宿主机通过 Compose 调工具命令，也可以直接这样写：
 
 ```bash
 suncodexclawd list --docker-compose
-suncodexclawd configure --docker-compose --account assistant
-suncodexclawd timer list --docker-compose --account assistant
-suncodexclawd memory search 中文 --docker-compose --account assistant
-suncodexclawd sync status --docker-compose --account assistant
+suncodexclawd configure --docker-compose --account <account>
+suncodexclawd configure edit --docker-compose --account <account>
+suncodexclawd timer list --docker-compose --account <account>
+suncodexclawd memory search 中文 --docker-compose --account <account>
+suncodexclawd sync status --docker-compose --account <account>
 ```
 
 如果你已经位于某个机器人自己的工作目录里，也可以直接依赖 `.config.toml`：
@@ -392,6 +443,22 @@ suncodexclawd memory list
 suncodexclawd timer list
 suncodexclawd sync status
 ```
+
+## macOS 开机常驻
+
+如果你是在 macOS 本机模式部署，并希望用 `launchd` 做开机常驻，可以使用：
+
+```bash
+suncodexclawd launchagents install --account <account>
+suncodexclawd launchagents status --account <account>
+suncodexclawd launchagents uninstall --account <account>
+```
+
+说明：
+
+- `launchagents` 只服务本机模式，不走 `--docker-compose`
+- 默认会按当前配置生成每个账号自己的 plist
+- 如果你已经切到 Go native 运行时，也可以配合 `--run-mode supervisor` 使用本机 `suncodexclawd`
 
 ## 定时任务
 
@@ -412,11 +479,11 @@ suncodexclawd sync status
 ```bash
 suncodexclawd timer upsert \
   --id daily-report \
-  --account assistant \
+  --account <account> \
   --chat-id oc_xxx \
   --daily 09:00 \
   --tz Asia/Shanghai \
-  --cwd workspace/assistant \
+  --cwd workspace/<account-namespace> \
   --prompt "检查仓库并把日报发回当前会话"
 ```
 
@@ -424,7 +491,7 @@ suncodexclawd timer upsert \
 
 ```bash
 suncodexclawd timer update daily-report \
-  --account assistant \
+  --account <account> \
   --daily 10:30 \
   --prompt "检查仓库并发送更新后的日报"
 ```
@@ -434,7 +501,8 @@ suncodexclawd timer update daily-report \
 - 任务名：`workspace-doc-sync`
 - 动作：同步 `agent.md`、`soul.md`、`heartbeats.md`
 - 周期：每 24 小时一次
-- 存储位置：`config/timers/<account>/workspace-doc-sync.json`
+- 存储位置：`config/timers/<account-namespace>/workspace-doc-sync.json`
+  - 这里的 `<account-namespace>` 是账号名按本地目录规则清洗后的结果，例如空格和斜杠会转成 `-`
 - 如果尚未配置 WebDAV，任务会以 `--skip-if-unconfigured` 安静跳过
 
 ## 飞书里的 `/timer`
@@ -448,25 +516,30 @@ suncodexclawd timer update daily-report \
 - `/timer enable daily-report`
 - `/timer disable daily-report`
 - `/timer delete daily-report`
-- `/timer 创建一个每天 09:00 执行的日报任务，目录 workspace/assistant，结果发回当前会话`
+- `/timer 创建一个每天 09:00 执行的日报任务，目录 workspace/<account-namespace>，结果发回当前会话`
 - `/timer 把 daily-report 改成每天 10:30 执行，并把任务内容改成检查当前工作目录后发回当前会话`
+
+说明：
+
+- `/timer` 默认操作当前机器人账号的定时任务
+- 用自然语言创建任务时，默认把结果发回当前会话
 
 ## 记忆系统
 
 内置 `memory` 子系统会按机器人账号分库。
 
 - 每个机器人使用独立记忆库
-- 存储位置：`config/memory/libraries/<account>/entries/*.json`
+- 存储位置：`config/memory/libraries/<account-namespace>/entries/*.json`
 - 适合存长期偏好、长期规则、检索线索
 
 常用命令：
 
 ```bash
-suncodexclawd memory add --account assistant --text "以后默认用简体中文回复"
-suncodexclawd memory list --account assistant
-suncodexclawd memory search 中文 --account assistant
-suncodexclawd memory show mem-20260320-090000-000 --account assistant
-suncodexclawd memory delete mem-20260320-090000-000 --account assistant
+suncodexclawd memory add --account <account> --text "以后默认用简体中文回复"
+suncodexclawd memory list --account <account>
+suncodexclawd memory search 中文 --account <account>
+suncodexclawd memory show mem-20260320-090000-000 --account <account>
+suncodexclawd memory delete mem-20260320-090000-000 --account <account>
 ```
 
 ## 飞书里的 `/memory`
@@ -479,6 +552,10 @@ suncodexclawd memory delete mem-20260320-090000-000 --account assistant
 - `/memory search 中文`
 - `/memory show mem-20260320-090000-000`
 - `/memory delete mem-20260320-090000-000`
+
+说明：
+
+- `/memory` 默认操作当前机器人账号自己的独立记忆库
 
 ## 文档同步与备份
 
@@ -515,22 +592,24 @@ workspace_id = "assistant"
 说明：
 
 - `workspace_id` 现在按机器人独立解析
-- 如果未显式配置 `[sync.<account>].workspace_id`，默认就使用该机器人的账号名
+- 如果未显式配置 `[sync.<account>].workspace_id`，默认就使用该机器人的账号名派生值
 - 不建议在共享层为多个机器人设置同一个 `workspace_id`
 
 常用命令：
 
 ```bash
-suncodexclawd sync status --account assistant
-suncodexclawd sync list-remote --account assistant
-suncodexclawd sync push --account assistant
-suncodexclawd sync pull --account assistant --to .runtime/sync/restore/latest
-suncodexclawd sync restore --account assistant --snapshot latest
+suncodexclawd sync status --account <account>
+suncodexclawd sync list-remote --account <account>
+suncodexclawd sync push --account <account>
+suncodexclawd sync pull --account <account>
+suncodexclawd sync pull --account <account> --to .runtime/sync/restore/<account-namespace>/latest
+suncodexclawd sync restore --account <account> --snapshot latest
 ```
 
 说明：
 
-- `pull` 只拉到本地 staging/restore 目录，不直接覆盖工作区
+- `pull` 默认拉到当前机器人自己的 `.runtime/sync/restore/<account-namespace>/<snapshot>` 目录，不直接覆盖工作区
+- 这里的 `<account-namespace>` 是账号名按本地目录规则清洗后的结果，例如空格和斜杠会转成 `-`
 - `restore` 默认只补缺失文件
 - 显式加 `--force` 时才覆盖已有文件
 
@@ -544,6 +623,11 @@ suncodexclawd sync restore --account assistant --snapshot latest
 - `/sync pull`
 - `/sync pull 20260320T010203Z`
 - `/sync restore latest`
+
+说明：
+
+- `/sync` 默认操作当前机器人账号的同步配置
+- `/sync pull` 默认拉到 `.runtime/sync/restore/<account-namespace>/<snapshot>`
 
 ## 更新
 
@@ -563,9 +647,14 @@ suncodexclawd update --check
 
 ```bash
 suncodexclawd update --docker-compose
+suncodexclawd update --docker-compose --project-dir /path/to/SunCodexClaw
 ```
 
-这会重建并重启容器。下载或重建完成后，命令会提示你重启服务。
+这会重建并重启容器。
+
+- `--project-dir` 用来指定本地 `docker compose` 项目目录
+- Compose 更新不是“下载 GitHub release 二进制替换本机文件”，所以不支持 `--repo/--version/--bin/--check/--dry-run`
+- 如果你只是想显式声明“还是本机模式”，也可以写 `suncodexclawd update --local`
 
 ## 常见问题
 
@@ -594,7 +683,7 @@ ghcr.io/rainoffallingstar/suncodexclaw:main
 直接重新运行：
 
 ```bash
-suncodexclawd configure --account assistant
+suncodexclawd configure --account <account>
 ```
 
 或者先备份后重建：
@@ -602,10 +691,15 @@ suncodexclawd configure --account assistant
 ```bash
 mv config/secrets/local.toml config/secrets/local.toml.bak
 mv config/feishu/bots.toml config/feishu/bots.toml.bak
-suncodexclawd configure --account assistant
+suncodexclawd configure --account <account>
 ```
 
 ## Docker 镜像
+
+当前 GHCR 镜像会发布 `linux/amd64` 和 `linux/arm64` 多架构镜像。
+
+- 如果你只是想直接运行预构建镜像，可以先 `docker pull`
+- 如果你使用仓库自带的 `docker-compose.yml`，`start/restart/update --docker-compose` 默认会先拉取 GHCR 镜像，只有拉取失败时才回退到本地构建
 
 ```bash
 docker pull ghcr.io/rainoffallingstar/suncodexclaw:main
@@ -616,4 +710,4 @@ docker pull ghcr.io/rainoffallingstar/suncodexclaw:main
 这些脚本仍然保留，但不推荐新部署继续依赖：
 
 - `tools/feishu_bot_ctl.sh`
-- `tools/install_feishu_launchagents.sh`
+- `tools/install_feishu_launchagents.sh`（仅 macOS，本机模式）

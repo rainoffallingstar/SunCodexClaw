@@ -1,6 +1,11 @@
 services:
   suncodexclaw:
-    image: ghcr.io/${GITHUB_REPOSITORY:-rainoffallingstar/suncodexclaw}:${IMAGE_TAG:-main}
+    image: ghcr.io/${IMAGE_REPOSITORY:-rainoffallingstar/suncodexclaw}:${IMAGE_TAG:-main}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        CODEX_NPM_PKG: ${CODEX_NPM_PKG:-@openai/codex}
     container_name: suncodexclaw
     restart: unless-stopped
     # Bind-mounted volumes need to be writable for persisting runtime state and bot_open_id.
@@ -14,6 +19,8 @@ services:
       SUNCODEXCLAW_NO_RESTART: "${SUNCODEXCLAW_NO_RESTART:-false}"
       SUNCODEXCLAW_MAX_RESTARTS: "${SUNCODEXCLAW_MAX_RESTARTS:-20}"
       SUNCODEXCLAW_RESTART_WINDOW: "${SUNCODEXCLAW_RESTART_WINDOW:-10m}"
+      # Runtime backend inside container: js | go
+      SUNCODEXCLAW_FEISHU_RUNTIME: "${SUNCODEXCLAW_FEISHU_RUNTIME:-js}"
       # Optional: override node binary
       # NODE_BIN: "node"
     ports:

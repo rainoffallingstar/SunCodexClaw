@@ -1,7 +1,7 @@
 FROM --platform=$BUILDPLATFORM golang:1.22-bookworm AS go-build
 
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
 COPY cmd ./cmd
 COPY internal ./internal
 ARG TARGETOS

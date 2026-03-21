@@ -10,7 +10,7 @@ shift || true
 
 case "${cmd}" in
   start)
-    exec /app/bin/suncodexclawd start
+    exec /app/bin/suncodexclawd start "$@"
     ;;
   status|stop|restart|list|logs|preflight|configure|launchagents|timer|memory|sync|update)
     exec /app/bin/suncodexclawd "${cmd}" "$@"

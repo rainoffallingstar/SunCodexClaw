@@ -35,7 +35,9 @@ Usage:
   bash tools/feishu_bot_ctl.sh logs <account> [--follow]
 
 Notes:
-  - account defaults to all for start/stop/restart/status
+  - omitting account defaults to enabled accounts for start
+  - omitting account defaults to all configured accounts for stop/status
+  - omitting account on restart stops all configured accounts, then starts enabled accounts
   - logs requires a single account name
   - on macOS, start/stop/status prefer launchctl for detached background jobs
   - set SUNCODEXCLAW_DISABLE_LAUNCHCTL=true to force non-launchctl mode (passes --no-launchctl to Go daemon)
@@ -69,7 +71,7 @@ maybe_delegate_to_go_ctl() {
       ;;
     logs)
       if [[ -z "${target}" || "${target}" == "all" ]]; then
-        echo "[error] logs requires one account (example: assistant)" >&2
+        echo "[error] logs requires one account (example: <account>)" >&2
         exit 1
       fi
       if [[ "${opt3}" == "--follow" || "${opt3}" == "-f" ]]; then
@@ -137,13 +139,49 @@ for (const name of [...names].sort()) {
 EOF
 }
 
+list_enabled_accounts() {
+  [[ -f "${REPO_DIR}/tools/lib/bot_overlay_store.js" ]] || return 1
+  REPO_DIR_ENV="${REPO_DIR}" "${NODE_BIN_RESOLVED}" - <<'EOF' | awk 'NF && !seen[$0]++' | sort
+const path = require('path');
+const { listConfigEntryNames } = require(path.join(process.env.REPO_DIR_ENV, 'tools', 'lib', 'local_secret_store.js'));
+const { readBotOverlay } = require(path.join(process.env.REPO_DIR_ENV, 'tools', 'lib', 'bot_overlay_store.js'));
+const configDir = path.join(process.env.REPO_DIR_ENV, 'config');
+const overlay = readBotOverlay(configDir);
+const shared = (overlay && overlay.shared && typeof overlay.shared === 'object') ? overlay.shared : {};
+const names = new Set([
+  ...Object.keys((overlay && overlay.bots) || {}),
+  ...listConfigEntryNames('feishu'),
+]);
+for (const name of [...names].sort()) {
+  if (!name || name === 'default' || name.endsWith('.example')) continue;
+  const bot = ((overlay && overlay.bots) || {})[name] || {};
+  const merged = { ...shared, ...bot };
+  const enabled = Object.prototype.hasOwnProperty.call(merged, 'enabled')
+    ? Boolean(merged.enabled)
+    : true;
+  if (enabled) {
+    console.log(name);
+  }
+}
+EOF
+}
+
 resolve_accounts() {
   local target="${1:-all}"
+  local mode="${2:-configured}"
   local listed
   if [[ "${target}" == "all" ]]; then
-    listed="$(list_accounts || true)"
+    if [[ "${mode}" == "enabled" ]]; then
+      listed="$(list_enabled_accounts || true)"
+    else
+      listed="$(list_accounts || true)"
+    fi
     if [[ -z "${listed//[$'\r\n\t ']}" ]]; then
-      echo "[error] no feishu accounts found in ${CONFIG_DIR}" >&2
+      if [[ "${mode}" == "enabled" ]]; then
+        echo "[error] no enabled feishu accounts found in ${CONFIG_DIR}" >&2
+      else
+        echo "[error] no feishu accounts found in ${CONFIG_DIR}" >&2
+      fi
       exit 1
     fi
     printf '%s\n' "${listed}"
@@ -152,16 +190,34 @@ resolve_accounts() {
   printf '%s\n' "${target}"
 }
 
+sanitize_account_namespace() {
+  local text="${1:-}"
+  text="${text//\\/-}"
+  text="${text//\//-}"
+  text="${text// /-}"
+  while [[ -n "${text}" && ( "${text#[-.]}" != "${text}" ) ]]; do
+    text="${text#[-.]}"
+  done
+  while [[ -n "${text}" && ( "${text%[-.]}" != "${text}" ) ]]; do
+    text="${text%[-.]}"
+  done
+  if [[ -z "${text}" ]]; then
+    printf 'default\n'
+    return 0
+  fi
+  printf '%s\n' "${text}"
+}
+
 pid_file() {
-  printf '%s/%s.pid\n' "${PID_DIR}" "$1"
+  printf '%s/%s.pid\n' "${PID_DIR}" "$(sanitize_account_namespace "$1")"
 }
 
 log_file() {
-  printf '%s/%s.log\n' "${LOG_DIR}" "$1"
+  printf '%s/%s.log\n' "${LOG_DIR}" "$(sanitize_account_namespace "$1")"
 }
 
 launchctl_label() {
-  printf '%s.%s\n' "${LAUNCHCTL_PREFIX}" "$1"
+  printf '%s.%s\n' "${LAUNCHCTL_PREFIX}" "$(sanitize_account_namespace "$1")"
 }
 
 launchctl_job_exists() {
@@ -309,7 +365,7 @@ start_one() {
   cfg="${CONFIG_DIR}/bots.toml"
 
   if ! config_exists_for_account "${account}"; then
-    echo "[error] missing config for ${account}: ${cfg} [bot.${account}] or config/secrets/local.toml [feishu.${account}]" >&2
+    echo "[error] missing config for ${account}: check ${cfg} and config/secrets/local.toml for this account" >&2
     return 1
   fi
 
@@ -491,25 +547,25 @@ case "${ACTION}" in
   start)
     while IFS= read -r account; do
       [[ -z "${account}" ]] || start_one "${account}"
-    done < <(resolve_accounts "${TARGET}")
+    done < <(resolve_accounts "${TARGET}" "enabled")
     ;;
   stop)
     while IFS= read -r account; do
       [[ -z "${account}" ]] || stop_one "${account}"
-    done < <(resolve_accounts "${TARGET}")
+    done < <(resolve_accounts "${TARGET}" "configured")
     ;;
   restart)
     while IFS= read -r account; do
       [[ -z "${account}" ]] || stop_one "${account}"
-    done < <(resolve_accounts "${TARGET}")
+    done < <(resolve_accounts "${TARGET}" "configured")
     while IFS= read -r account; do
       [[ -z "${account}" ]] || start_one "${account}"
-    done < <(resolve_accounts "${TARGET}")
+    done < <(resolve_accounts "${TARGET}" "enabled")
     ;;
   status)
     while IFS= read -r account; do
       [[ -z "${account}" ]] || status_one "${account}"
-    done < <(resolve_accounts "${TARGET}")
+    done < <(resolve_accounts "${TARGET}" "configured")
     ;;
   logs)
     if [[ "${TARGET}" == "all" || -z "${TARGET}" ]]; then

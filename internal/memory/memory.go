@@ -33,11 +33,15 @@ func NewStore(repoRoot string) *Store {
 }
 
 func NewLibraryStore(repoRoot, library string) *Store {
-	name := sanitizeLibrary(library)
+	name := LibraryName(library)
 	if name == "" {
 		name = "default"
 	}
 	return &Store{RepoRoot: repoRoot, Library: name}
+}
+
+func LibraryName(raw string) string {
+	return sanitizeLibrary(raw)
 }
 
 func (s *Store) memoryDir() string {

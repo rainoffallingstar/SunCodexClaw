@@ -111,8 +111,6 @@ func (s *Supervisor) writePlist(account string, opts LaunchAgentOptions) (string
 
 	label := s.launchctlLabel(account)
 	logPath := s.logFile(account)
-	botScript := filepath.Join(s.opts.RepoRoot, s.opts.BotScriptRel)
-
 	var programArgs string
 	var extraEnv strings.Builder
 
@@ -138,17 +136,37 @@ func (s *Supervisor) writePlist(account string, opts LaunchAgentOptions) (string
   </array>`, xmlEscape(cmd))
 		extraEnv.WriteString("    <key>SUNCODEXCLAW_DISABLE_LAUNCHCTL</key>\n    <string>true</string>\n")
 	default:
-		nodeBin := strings.TrimSpace(s.opts.NodeBin)
-		if nodeBin == "" {
-			nodeBin = "node"
-		}
-		programArgs = fmt.Sprintf(`  <key>ProgramArguments</key>
+		if normalizeRuntimeBackend(s.opts.RuntimeBackend) == "go" {
+			daemon := strings.TrimSpace(opts.DaemonBin)
+			if daemon == "" {
+				daemon = filepath.Join(s.opts.RepoRoot, "bin", "suncodexclawd")
+			}
+			if fi, err := os.Stat(daemon); err != nil || fi.IsDir() || fi.Mode()&0o111 == 0 {
+				return "", fmt.Errorf("suncodexclawd not executable: %s (build first: bash tools/build_go_bins.sh)", daemon)
+			}
+			programArgs = fmt.Sprintf(`  <key>ProgramArguments</key>
+  <array>
+    <string>%s</string>
+    <string>feishu-run</string>
+    <string>--repo</string>
+    <string>%s</string>
+    <string>--account</string>
+    <string>%s</string>
+  </array>`, xmlEscape(daemon), xmlEscape(s.opts.RepoRoot), xmlEscape(account))
+		} else {
+			botScript := filepath.Join(s.opts.RepoRoot, s.opts.BotScriptRel)
+			nodeBin := strings.TrimSpace(s.opts.NodeBin)
+			if nodeBin == "" {
+				nodeBin = "node"
+			}
+			programArgs = fmt.Sprintf(`  <key>ProgramArguments</key>
   <array>
     <string>%s</string>
     <string>%s</string>
     <string>--account</string>
     <string>%s</string>
   </array>`, xmlEscape(nodeBin), xmlEscape(botScript), xmlEscape(account))
+		}
 	}
 
 	keepAliveXML := ""

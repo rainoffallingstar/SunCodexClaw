@@ -5,14 +5,18 @@ yarn-error.log
 
 .git
 .DS_Store
+.env
 
+.codex
 .runtime
+workspace
+bin
+dist
 *.log
 
-config/feishu/*.json
-!config/feishu/*.example.json
-config/secrets/*.yaml
-!config/secrets/*.example.yaml
+config/feishu/*.toml
+!config/feishu/*.example.toml
+config/secrets/*.toml
+!config/secrets/*.example.toml
 
 docs/images
-

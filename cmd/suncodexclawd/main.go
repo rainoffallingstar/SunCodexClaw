@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"suncodexclaw/internal/configstore"
+	"suncodexclaw/internal/feishunative"
 	"suncodexclaw/internal/memory"
 	"suncodexclaw/internal/supervisor"
 	"suncodexclaw/internal/timer"
@@ -60,6 +61,8 @@ func main() {
 		syncCmd(os.Args[2:])
 	case "update":
 		updateCmd(os.Args[2:])
+	case "feishu-run":
+		feishuRun(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -68,20 +71,32 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd start [--docker-compose] [--account a] [--account b] [--node-bin node] [--no-launchctl] [--once] [--no-restart] [--max-restarts 20] [--restart-window 10m] [--strict-start] [--start-check-delay 1s]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd stop [--docker-compose] [--account a] [--account b] [--no-launchctl]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd restart [--docker-compose] [--account a] [--account b] [--no-launchctl] [--strict-start] [--start-check-delay 1s]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd status [--docker-compose] [--account a] [--account b] [--no-launchctl]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd start [--account a] [--account b] [--repo .] [--node-bin node] [--runtime-backend js|go] [--no-launchctl] [--once] [--no-restart] [--max-restarts 20] [--restart-window 10m] [--strict-start] [--start-check-delay 1s]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd start --docker-compose [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd stop [--account a] [--account b] [--repo .] [--no-launchctl]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd stop --docker-compose [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd restart [--account a] [--account b] [--repo .] [--node-bin node] [--runtime-backend js|go] [--no-launchctl] [--strict-start] [--start-check-delay 1s]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd restart --docker-compose [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd status [--account a] [--account b] [--repo .] [--no-launchctl]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd status --docker-compose [--repo .]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd list [--docker-compose] [--account a] [--account b]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd logs [--docker-compose] --account a [--account b|--account all] [--follow|-f] [--lines 120] [--no-launchctl]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd preflight [--docker-compose] [--account a] [--account b] [--no-launchctl]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd logs --account a [--account b|--account all] [--repo .] [--follow|-f] [--lines 120] [--no-launchctl]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd logs --docker-compose [--repo .] [--follow|-f] [--lines 120]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd preflight [--account a] [--account b] [--repo .] [--node-bin node] [--runtime-backend js|go] [--no-launchctl]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd preflight --docker-compose [--account a] [--account b] [--repo .]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd timer <start|list|show|upsert|update|logs|run|enable|disable|delete>")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd memory <add|list|show|search|delete>")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd sync <status|list-remote|push|pull|restore>")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd update [--repo owner/repo] [--version vX.Y.Z] [--bin /path/to/suncodexclawd] [--check] [--dry-run] [--docker-compose]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd launchagents <install|uninstall|status> [--account a] [--account b] [--node-bin node] [--prefix com.sunbelife.suncodexclaw.feishu] [--run-mode node|supervisor] [--daemon-bin ./bin/suncodexclawd] [--codex-bin <path>] [--codex-home <path>] [--path <PATH>] [--keepalive] [--throttle-interval 10]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd configure [--docker-compose] --account assistant [--yes]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd configure add [--docker-compose] --account reviewer [--yes]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd update [--repo owner/repo] [--version vX.Y.Z] [--bin /path/to/suncodexclawd] [--check] [--dry-run]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd update --docker-compose [--project-dir .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd launchagents <install|uninstall|status> ...   # macOS/local mode only")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd configure [--docker-compose] --account <account> [--yes]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd configure add [--docker-compose] --account <account> [--yes]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd configure edit [--docker-compose] --account <account> [--yes]")
+	fmt.Fprintln(os.Stderr, "Notes:")
+	fmt.Fprintln(os.Stderr, "  - Default account selection depends on subcommand: start/preflight use enabled bots; status/stop use all configured bots; restart stops all configured bots then starts enabled bots.")
+	fmt.Fprintln(os.Stderr, "  - Local mode is the default; passing --local is optional and only makes the mode explicit.")
+	fmt.Fprintln(os.Stderr, "  - In a bot workspace, timer/memory/sync can infer --account from .config.toml.")
 }
 
 type multiFlag []string
@@ -92,25 +107,34 @@ func (m *multiFlag) Set(v string) error {
 	return nil
 }
 
-func baseFlags(name string) (*flag.FlagSet, *multiFlag, *string, *string) {
+func baseFlags(name string) (*flag.FlagSet, *multiFlag, *string, *string, *string) {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	var accounts multiFlag
-	fs.Var(&accounts, "account", "account name (repeatable); default is all enabled accounts")
+	fs.Var(&accounts, "account", "account name (repeatable); default set depends on subcommand")
 	nodeBin := fs.String("node-bin", getenvDefault("NODE_BIN", "node"), "node binary")
 	repo := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
-	return fs, &accounts, nodeBin, repo
+	runtimeBackend := fs.String("runtime-backend", normalizeRuntimeBackend(getenvDefault("SUNCODEXCLAW_FEISHU_RUNTIME", "js")), "feishu runtime backend: js | go")
+	return fs, &accounts, nodeBin, repo, runtimeBackend
 }
 
 func start(args []string) {
-	if dockerMode, _ := maybeDockerComposeMode(args); dockerMode {
-		if err := runDockerCompose(resolveRepoRoot(""), "up", "-d", "--build"); err != nil {
+	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
+		if err := ensureComposeLifecycleFlags("start", composeArgs,
+			"--account", "--node-bin", "--runtime-backend", "--no-launchctl",
+			"--no-restart", "--once", "--strict-start", "--start-check-delay",
+			"--max-restarts", "--restart-window", "--health-addr"); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(2)
+		}
+		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
+		if err := runDockerComposeLifecycleCommand(repo, false); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
 		return
 	}
 	args = stripRuntimeModeFlags(args)
-	fs, accounts, nodeBin, repoFlag := baseFlags("start")
+	fs, accounts, nodeBin, repoFlag, runtimeBackend := baseFlags("start")
 	healthAddr := fs.String("health-addr", getenvDefault("SUNCODEXCLAW_HEALTH_ADDR", ""), "optional health server addr (e.g. :8080)")
 	noLaunchctl := fs.Bool("no-launchctl", getenvBool("SUNCODEXCLAW_DISABLE_LAUNCHCTL", false), "macOS: disable launchctl detached mode and run in foreground supervisor mode")
 	noRestart := fs.Bool("no-restart", getenvBool("SUNCODEXCLAW_NO_RESTART", false), "disable auto-restart on crash")
@@ -126,12 +150,17 @@ func start(args []string) {
 	sup := supervisor.New(supervisor.Options{
 		RepoRoot:         repo,
 		NodeBin:          *nodeBin,
+		RuntimeBackend:   *runtimeBackend,
 		DisableLaunchctl: *noLaunchctl,
 		AutoRestart:      autoRestart,
 		MaxRestarts:      *maxRestarts,
 		RestartWindow:    *restartWindow,
 	})
-	accts := normalizeAccountsOrAll(*accounts)
+	accts, err := resolveEnabledAccounts(repo, *accounts)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -147,9 +176,10 @@ func start(args []string) {
 		go serveHealth(*healthAddr, sup, accts)
 	}
 	timerMgr := timer.NewManager(timer.Options{
-		RepoRoot: repo,
-		NodeBin:  *nodeBin,
-		Output:   os.Stdout,
+		RepoRoot:       repo,
+		NodeBin:        *nodeBin,
+		RuntimeBackend: *runtimeBackend,
+		Output:         os.Stdout,
 	})
 	go func() {
 		if err := timerMgr.Run(ctx); err != nil && ctx.Err() == nil {
@@ -265,8 +295,13 @@ func start(args []string) {
 }
 
 func status(args []string) {
-	if dockerMode, _ := maybeDockerComposeMode(args); dockerMode {
-		repo := resolveRepoRoot("")
+	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
+		if err := ensureComposeLifecycleFlags("status", composeArgs,
+			"--account", "--node-bin", "--runtime-backend", "--no-launchctl"); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(2)
+		}
+		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
 		if err := runDockerCompose(repo, "ps"); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
@@ -274,12 +309,20 @@ func status(args []string) {
 		return
 	}
 	args = stripRuntimeModeFlags(args)
-	fs, accounts, nodeBin, repoFlag := baseFlags("status")
+	fs, accounts, nodeBin, repoFlag, runtimeBackend := baseFlags("status")
 	noLaunchctl := fs.Bool("no-launchctl", getenvBool("SUNCODEXCLAW_DISABLE_LAUNCHCTL", false), "macOS: disable launchctl and use pidfile/manual detection only")
 	_ = fs.Parse(args)
 	repo := resolveRepoRoot(*repoFlag)
-	sup := supervisor.New(supervisor.Options{RepoRoot: repo, NodeBin: *nodeBin, DisableLaunchctl: *noLaunchctl})
-	accts := normalizeAccountsOrAll(*accounts)
+	sup := supervisor.New(supervisor.Options{RepoRoot: repo, NodeBin: *nodeBin, RuntimeBackend: *runtimeBackend, DisableLaunchctl: *noLaunchctl})
+	accts, err := resolveConfiguredAccounts(repo, *accounts)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if len(accts) == 0 {
+		fmt.Println("(no configured accounts)")
+		return
+	}
 	lines, err := sup.Status(accts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -291,20 +334,34 @@ func status(args []string) {
 }
 
 func stop(args []string) {
-	if dockerMode, _ := maybeDockerComposeMode(args); dockerMode {
-		if err := runDockerCompose(resolveRepoRoot(""), "down"); err != nil {
+	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
+		if err := ensureComposeLifecycleFlags("stop", composeArgs,
+			"--account", "--node-bin", "--runtime-backend", "--no-launchctl"); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(2)
+		}
+		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
+		if err := runDockerCompose(repo, "down"); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
 		return
 	}
 	args = stripRuntimeModeFlags(args)
-	fs, accounts, nodeBin, repoFlag := baseFlags("stop")
+	fs, accounts, nodeBin, repoFlag, runtimeBackend := baseFlags("stop")
 	noLaunchctl := fs.Bool("no-launchctl", getenvBool("SUNCODEXCLAW_DISABLE_LAUNCHCTL", false), "macOS: disable launchctl and stop only pidfile/manual processes")
 	_ = fs.Parse(args)
 	repo := resolveRepoRoot(*repoFlag)
-	sup := supervisor.New(supervisor.Options{RepoRoot: repo, NodeBin: *nodeBin, DisableLaunchctl: *noLaunchctl})
-	accts := normalizeAccountsOrAll(*accounts)
+	sup := supervisor.New(supervisor.Options{RepoRoot: repo, NodeBin: *nodeBin, RuntimeBackend: *runtimeBackend, DisableLaunchctl: *noLaunchctl})
+	accts, err := resolveConfiguredAccounts(repo, *accounts)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if len(accts) == 0 {
+		fmt.Println("(no configured accounts)")
+		return
+	}
 	lines, err := sup.Stop(accts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -316,23 +373,38 @@ func stop(args []string) {
 }
 
 func restart(args []string) {
-	if dockerMode, _ := maybeDockerComposeMode(args); dockerMode {
-		if err := runDockerCompose(resolveRepoRoot(""), "up", "-d", "--build", "--force-recreate"); err != nil {
+	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
+		if err := ensureComposeLifecycleFlags("restart", composeArgs,
+			"--account", "--node-bin", "--runtime-backend", "--no-launchctl",
+			"--strict-start", "--start-check-delay"); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(2)
+		}
+		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
+		if err := runDockerComposeLifecycleCommand(repo, true); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
 		return
 	}
 	args = stripRuntimeModeFlags(args)
-	fs, accounts, nodeBin, repoFlag := baseFlags("restart")
+	fs, accounts, nodeBin, repoFlag, runtimeBackend := baseFlags("restart")
 	noLaunchctl := fs.Bool("no-launchctl", getenvBool("SUNCODEXCLAW_DISABLE_LAUNCHCTL", false), "macOS: disable launchctl detached mode and run in foreground supervisor mode")
 	strictStart := fs.Bool("strict-start", getenvBool("SUNCODEXCLAW_STRICT_START", false), "exit non-zero if any account fails to start")
 	startCheckDelay := fs.Duration("start-check-delay", getenvDuration("SUNCODEXCLAW_START_CHECK_DELAY", 1*time.Second), "delay before checking status after restart")
 	_ = fs.Parse(args)
 	repo := resolveRepoRoot(*repoFlag)
 
-	sup := supervisor.New(supervisor.Options{RepoRoot: repo, NodeBin: *nodeBin, DisableLaunchctl: *noLaunchctl})
-	accts := normalizeAccountsOrAll(*accounts)
+	sup := supervisor.New(supervisor.Options{RepoRoot: repo, NodeBin: *nodeBin, RuntimeBackend: *runtimeBackend, DisableLaunchctl: *noLaunchctl})
+	stopAccounts, startAccounts, err := resolveRestartAccounts(repo, *accounts)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if len(stopAccounts) == 0 && len(startAccounts) == 0 {
+		fmt.Println("(no configured accounts)")
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -344,7 +416,7 @@ func restart(args []string) {
 	}()
 
 	// Stop phase (print per-account results)
-	stopLines, err := sup.Stop(accts)
+	stopLines, err := sup.Stop(stopAccounts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -354,7 +426,7 @@ func restart(args []string) {
 	}
 
 	// Start report phase
-	startLines, err := sup.StartReport(accts)
+	startLines, err := sup.StartReport(startAccounts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -371,7 +443,7 @@ func restart(args []string) {
 		}
 	}
 	if hasError {
-		for _, a := range normalizeForLogTail(accts, failedAccounts) {
+		for _, a := range normalizeForLogTail(startAccounts, failedAccounts) {
 			_ = sup.Logs(a, false, 80)
 		}
 		os.Exit(1)
@@ -379,7 +451,7 @@ func restart(args []string) {
 
 	// macOS: detached launchctl jobs.
 	if sup.UsingLaunchctl() {
-		launchLines, err := sup.StartDetached(accts)
+		launchLines, err := sup.StartDetached(startAccounts)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
@@ -389,8 +461,8 @@ func restart(args []string) {
 		}
 
 		time.Sleep(*startCheckDelay)
-		infos, _ := sup.StatusInfos(accts)
-		statusLines, _ := sup.Status(accts)
+		infos, _ := sup.StatusInfos(startAccounts)
+		statusLines, _ := sup.Status(stopAccounts)
 		for _, ln := range statusLines {
 			fmt.Println(ln)
 		}
@@ -417,11 +489,11 @@ func restart(args []string) {
 
 	go func() {
 		time.Sleep(*startCheckDelay)
-		infos, err := sup.StatusInfos(accts)
+		infos, err := sup.StatusInfos(startAccounts)
 		if err != nil {
 			return
 		}
-		statusLines, _ := sup.Status(accts)
+		statusLines, _ := sup.Status(stopAccounts)
 		for _, ln := range statusLines {
 			fmt.Println(ln)
 		}
@@ -448,7 +520,7 @@ func restart(args []string) {
 		cancel()
 	}()
 
-	if err := sup.StartAll(ctx, accts); err != nil && ctx.Err() == nil {
+	if err := sup.StartAll(ctx, startAccounts); err != nil && ctx.Err() == nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
@@ -467,8 +539,10 @@ func list(args []string) {
 			os.Exit(1)
 		}
 		return
+	} else {
+		args = composeArgs
 	}
-	fs, accounts, nodeBin, repoFlag := baseFlags("list")
+	fs, accounts, nodeBin, repoFlag, _ := baseFlags("list")
 	_ = fs.Parse(args)
 	repo := resolveRepoRoot(*repoFlag)
 	_ = nodeBin
@@ -497,35 +571,25 @@ func list(args []string) {
 }
 
 func logs(args []string) {
-	if dockerMode, _ := maybeDockerComposeMode(args); dockerMode {
-		repo := resolveRepoRoot("")
-		follow := false
-		lines := "120"
-		for i := 0; i < len(args); i++ {
-			switch args[i] {
-			case "--local":
-			case "--follow", "-f":
-				follow = true
-			case "--lines":
-				if i+1 < len(args) {
-					lines = args[i+1]
-					i++
-				}
-			}
+	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
+		if err := ensureComposeLifecycleFlags("logs", composeArgs, "--account"); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(2)
 		}
-		composeArgs := []string{"logs", "--tail", lines}
-		if follow {
-			composeArgs = append(composeArgs, "-f")
+		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
+		composeLogArgs, err := composeLogsCommandArgs(composeArgs)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(2)
 		}
-		composeArgs = append(composeArgs, "suncodexclaw")
-		if err := runDockerCompose(repo, composeArgs...); err != nil {
+		if err := runDockerCompose(repo, composeLogArgs...); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
 		return
 	}
 	args = stripRuntimeModeFlags(args)
-	fs, accounts, nodeBin, repoFlag := baseFlags("logs")
+	fs, accounts, nodeBin, repoFlag, runtimeBackend := baseFlags("logs")
 	follow := fs.Bool("follow", false, "follow logs")
 	followShort := fs.Bool("f", false, "alias of --follow")
 	lines := fs.Int("lines", 120, "lines to show before following")
@@ -533,7 +597,7 @@ func logs(args []string) {
 	_ = fs.Parse(args)
 	repo := resolveRepoRoot(*repoFlag)
 
-	sup := supervisor.New(supervisor.Options{RepoRoot: repo, NodeBin: *nodeBin, DisableLaunchctl: *noLaunchctl})
+	sup := supervisor.New(supervisor.Options{RepoRoot: repo, NodeBin: *nodeBin, RuntimeBackend: *runtimeBackend, DisableLaunchctl: *noLaunchctl})
 	if *followShort {
 		*follow = true
 	}
@@ -585,28 +649,24 @@ func logs(args []string) {
 
 func preflight(args []string) {
 	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
-		dockerArgs := append([]string{"run", "--rm", "suncodexclaw", "preflight"}, composeArgs...)
-		if err := runDockerCompose(resolveRepoRoot(""), dockerArgs...); err != nil {
+		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
+		if err := runDockerComposeServiceCommand(repo, "preflight", composeArgs...); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
 		return
 	}
 	args = stripRuntimeModeFlags(args)
-	fs, accounts, nodeBin, repoFlag := baseFlags("preflight")
+	fs, accounts, nodeBin, repoFlag, runtimeBackend := baseFlags("preflight")
 	noLaunchctl := fs.Bool("no-launchctl", getenvBool("SUNCODEXCLAW_DISABLE_LAUNCHCTL", false), "macOS: disable launchctl usage")
 	_ = fs.Parse(args)
+	_ = noLaunchctl
 	repo := resolveRepoRoot(*repoFlag)
 
-	sup := supervisor.New(supervisor.Options{RepoRoot: repo, NodeBin: *nodeBin, DisableLaunchctl: *noLaunchctl})
-	accts := normalizeAccountsOrAll(*accounts)
-	if len(accts) == 0 {
-		found, err := sup.DiscoverAccounts()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
-		}
-		accts = found
+	accts, err := resolveEnabledAccounts(repo, *accounts)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
 	}
 	if len(accts) == 0 {
 		fmt.Fprintln(os.Stderr, "error: no accounts found")
@@ -617,7 +677,7 @@ func preflight(args []string) {
 	for _, a := range accts {
 		// Node bot already has a robust dry-run that checks codex presence and config sources.
 		// Run it as a preflight without starting the service.
-		cmd := exec.Command(*nodeBin, filepath.Join(repo, "tools", "feishu_ws_bot.js"), "--account", a, "--dry-run")
+		cmd := buildRuntimeCommand(repo, *nodeBin, *runtimeBackend, a, true, "")
 		cmd.Dir = repo
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -630,6 +690,68 @@ func preflight(args []string) {
 	}
 }
 
+func feishuRun(args []string) {
+	fs := flag.NewFlagSet("feishu-run", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root")
+	account := fs.String("account", "", "feishu account name")
+	dryRun := fs.Bool("dry-run", false, "dry run")
+	timerTaskFile := fs.String("timer-task-file", "", "timer task file")
+	_ = fs.Parse(args)
+	repo := resolveRepoRoot(*repoFlag)
+	if strings.TrimSpace(*account) == "" {
+		fmt.Fprintln(os.Stderr, "error: feishu-run requires --account <account>")
+		os.Exit(2)
+	}
+	if err := feishunative.Run(context.Background(), feishunative.RunOptions{
+		RepoRoot:      repo,
+		Account:       strings.TrimSpace(*account),
+		DryRun:        *dryRun,
+		TimerTaskFile: strings.TrimSpace(*timerTaskFile),
+		Stdout:        os.Stdout,
+		Stderr:        os.Stderr,
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+func normalizeRuntimeBackend(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "js", "node":
+		return "js"
+	case "go", "native":
+		return "go"
+	default:
+		return "js"
+	}
+}
+
+func buildRuntimeCommand(repo, nodeBin, runtimeBackend, account string, dryRun bool, timerTaskFile string) *exec.Cmd {
+	backend := normalizeRuntimeBackend(runtimeBackend)
+	if backend == "go" {
+		exe, err := os.Executable()
+		if err != nil {
+			exe = filepath.Join(repo, "bin", executableNameForRuntime())
+		}
+		args := []string{"feishu-run", "--repo", repo, "--account", account}
+		if dryRun {
+			args = append(args, "--dry-run")
+		}
+		if strings.TrimSpace(timerTaskFile) != "" {
+			args = append(args, "--timer-task-file", strings.TrimSpace(timerTaskFile))
+		}
+		return exec.Command(exe, args...)
+	}
+	args := []string{filepath.Join(repo, "tools", "feishu_ws_bot.js"), "--account", account}
+	if dryRun {
+		args = append(args, "--dry-run")
+	}
+	if strings.TrimSpace(timerTaskFile) != "" {
+		args = append(args, "--timer-task-file", strings.TrimSpace(timerTaskFile))
+	}
+	return exec.Command(nodeBin, args...)
+}
+
 func configure(args []string) {
 	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
 		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
@@ -638,6 +760,8 @@ func configure(args []string) {
 			os.Exit(1)
 		}
 		return
+	} else {
+		args = composeArgs
 	}
 	if err := wizard.Configure(wizard.Options{Args: args}); err != nil {
 		// Flag parsing errors already contain usage hints; keep it simple here.
@@ -647,7 +771,7 @@ func configure(args []string) {
 	fs := flag.NewFlagSet("configure", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	account := fs.String("account", "", "feishu account name")
-	_ = fs.Parse(args)
+	_ = fs.Parse(normalizeConfigureArgs(args))
 	if strings.TrimSpace(*account) == "" {
 		fmt.Fprintln(os.Stderr, "error: configure requires --account <account>")
 		os.Exit(2)
@@ -655,7 +779,18 @@ func configure(args []string) {
 	fmt.Printf("configured_account=%s\n", *account)
 }
 
+func normalizeConfigureArgs(args []string) []string {
+	if len(args) > 0 {
+		action := strings.TrimSpace(args[0])
+		if action == "add" || action == "edit" {
+			return append([]string{}, args[1:]...)
+		}
+	}
+	return append([]string{}, args...)
+}
+
 func updateCmd(args []string) {
+	args = stripExplicitLocalFlag(args)
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	repo := fs.String("repo", "rainoffallingstar/SunCodexClaw", "github repo in owner/name form")
 	version := fs.String("version", "", "optional release tag; default uses latest release")
@@ -663,15 +798,20 @@ func updateCmd(args []string) {
 	check := fs.Bool("check", false, "show the selected release asset without replacing the binary")
 	dryRun := fs.Bool("dry-run", false, "download metadata only; do not replace the binary")
 	dockerCompose := fs.Bool("docker-compose", false, "refresh container service through docker compose instead of replacing the local binary")
+	projectDir := fs.String("project-dir", "", "docker compose project directory; defaults to repo root auto-detection")
 	_ = fs.Parse(args)
 	if *dockerCompose {
-		repoRoot := resolveRepoRoot("")
-		if err := runDockerCompose(repoRoot, "up", "-d", "--build", "--force-recreate"); err != nil {
+		if err := ensureComposeUpdateFlags(args); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(2)
+		}
+		repoRoot := resolveRepoRoot(*projectDir)
+		if err := runDockerComposeLifecycleCommand(repoRoot, true); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
 		fmt.Println("status=updated_docker_compose")
-		fmt.Println("next_step=container_recreated")
+		fmt.Println("next_step=container_refreshed")
 		return
 	}
 
@@ -730,6 +870,17 @@ func stripRuntimeModeFlags(args []string) []string {
 	return out
 }
 
+func stripExplicitLocalFlag(args []string) []string {
+	out := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "--local" {
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
 func runDockerCompose(repo string, args ...string) error {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return fmt.Errorf("--docker-compose requires docker to be installed and available in PATH")
@@ -742,17 +893,57 @@ func runDockerCompose(repo string, args ...string) error {
 	return cmd.Run()
 }
 
+func composeLifecycleUpArgs(forceRecreate bool, build bool) []string {
+	args := []string{"up", "-d"}
+	if build {
+		args = append(args, "--build")
+	}
+	if forceRecreate {
+		args = append(args, "--force-recreate")
+	}
+	return args
+}
+
+func composeServiceRunArgs(subcommand string, serviceArgs []string, build bool) []string {
+	args := []string{"run", "--rm", "--workdir", "/app"}
+	if build {
+		args = append(args, "--build")
+	}
+	args = append(args, "suncodexclaw", subcommand)
+	args = append(args, serviceArgs...)
+	return args
+}
+
+func composeServiceExecArgs(subcommand string, serviceArgs []string, interactive bool) []string {
+	args := []string{"exec"}
+	if !interactive {
+		args = append(args, "-T")
+	}
+	args = append(args, "--workdir", "/app", "suncodexclaw", "suncodexclawd", subcommand)
+	args = append(args, serviceArgs...)
+	return args
+}
+
+func runDockerComposeLifecycleCommand(repo string, forceRecreate bool) error {
+	if err := runDockerCompose(repo, "pull", "suncodexclaw"); err != nil {
+		fmt.Fprintf(os.Stderr, "[warn] docker compose pull suncodexclaw failed, falling back to local build: %v\n", err)
+		return runDockerCompose(repo, composeLifecycleUpArgs(forceRecreate, true)...)
+	}
+	return runDockerCompose(repo, composeLifecycleUpArgs(forceRecreate, false)...)
+}
+
 func runDockerComposeServiceCommand(repo string, subcommand string, args ...string) error {
+	serviceArgs := normalizeComposeServiceArgs(subcommand, args)
 	if running, err := dockerComposeServiceRunning(repo, "suncodexclaw"); err != nil {
 		return err
 	} else if running {
-		composeArgs := []string{"exec", "suncodexclaw", "suncodexclawd", subcommand}
-		composeArgs = append(composeArgs, args...)
-		return runDockerCompose(repo, composeArgs...)
+		return runDockerCompose(repo, composeServiceExecArgs(subcommand, serviceArgs, stdinLooksInteractive())...)
 	}
-	composeArgs := []string{"run", "--rm", "suncodexclaw", subcommand}
-	composeArgs = append(composeArgs, args...)
-	return runDockerCompose(repo, composeArgs...)
+	if err := runDockerCompose(repo, "pull", "suncodexclaw"); err != nil {
+		fmt.Fprintf(os.Stderr, "[warn] docker compose pull suncodexclaw failed, falling back to local build: %v\n", err)
+		return runDockerCompose(repo, composeServiceRunArgs(subcommand, serviceArgs, true)...)
+	}
+	return runDockerCompose(repo, composeServiceRunArgs(subcommand, serviceArgs, false)...)
 }
 
 func extractRepoFlag(args []string) string {
@@ -774,11 +965,121 @@ func extractRepoFlag(args []string) string {
 	return ""
 }
 
+func ensureComposeLifecycleFlags(command string, args []string, unsupported ...string) error {
+	if flag := findPresentFlag(args, unsupported...); flag != "" {
+		return fmt.Errorf("%s --docker-compose manages the whole compose service and does not support %s", command, flag)
+	}
+	return nil
+}
+
+func ensureComposeUpdateFlags(args []string) error {
+	if flag := findPresentFlag(args, "--repo", "--version", "--bin", "--check", "--dry-run"); flag != "" {
+		return fmt.Errorf("update --docker-compose refreshes the compose service and does not support %s; use --project-dir to choose the compose project directory", flag)
+	}
+	return nil
+}
+
+func findPresentFlag(args []string, names ...string) string {
+	for _, name := range names {
+		for _, arg := range args {
+			trimmed := strings.TrimSpace(arg)
+			if trimmed == name || strings.HasPrefix(trimmed, name+"=") {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+func normalizeComposeServiceArgs(subcommand string, args []string) []string {
+	out := make([]string, 0, len(args)+2)
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" {
+			continue
+		}
+		if arg == "--repo" {
+			if i+1 < len(args) {
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "--repo=") {
+			continue
+		}
+		out = append(out, args[i])
+	}
+	switch strings.TrimSpace(subcommand) {
+	case "list", "preflight", "timer", "memory", "sync":
+		out = append(out, "--repo", "/app")
+	}
+	return out
+}
+
+func composeLogsCommandArgs(args []string) ([]string, error) {
+	fs := flag.NewFlagSet("logs --docker-compose", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	repo := fs.String("repo", "", "repo root")
+	follow := fs.Bool("follow", false, "follow logs")
+	followShort := fs.Bool("f", false, "alias of --follow")
+	lines := fs.Int("lines", 120, "lines to show")
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+	_ = repo
+	composeArgs := []string{"logs", "--tail", strconv.Itoa(*lines)}
+	if *follow || *followShort {
+		composeArgs = append(composeArgs, "-f")
+	}
+	composeArgs = append(composeArgs, "suncodexclaw")
+	return composeArgs, nil
+}
+
+func reorderFlagsBeforePositionals(args []string, boolFlags map[string]bool) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	flags := make([]string, 0, len(args))
+	positionals := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" {
+			continue
+		}
+		if arg == "--" {
+			positionals = append(positionals, args[i+1:]...)
+			break
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			positionals = append(positionals, arg)
+			continue
+		}
+		flags = append(flags, arg)
+		if strings.Contains(arg, "=") {
+			continue
+		}
+		name := arg
+		if boolFlags[name] {
+			continue
+		}
+		if i+1 >= len(args) {
+			continue
+		}
+		next := strings.TrimSpace(args[i+1])
+		if next == "" || strings.HasPrefix(next, "-") {
+			continue
+		}
+		flags = append(flags, next)
+		i++
+	}
+	return append(flags, positionals...)
+}
+
 func dockerComposeServiceRunning(repo string, service string) (bool, error) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return false, fmt.Errorf("--docker-compose requires docker to be installed and available in PATH")
 	}
-	cmd := exec.Command("docker", "compose", "ps", "-q", service)
+	cmd := exec.Command("docker", composeRunningPSArgs(service)...)
 	cmd.Dir = repo
 	out, err := cmd.Output()
 	if err != nil {
@@ -795,6 +1096,18 @@ func dockerComposeServiceRunning(repo string, service string) (bool, error) {
 	return strings.TrimSpace(string(out)) != "", nil
 }
 
+func composeRunningPSArgs(service string) []string {
+	return []string{"compose", "ps", "--status", "running", "-q", service}
+}
+
+func stdinLooksInteractive() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
+}
+
 func timerCmd(args []string) {
 	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
 		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
@@ -803,6 +1116,8 @@ func timerCmd(args []string) {
 			os.Exit(1)
 		}
 		return
+	} else {
+		args = composeArgs
 	}
 	if len(args) == 0 {
 		timerUsage()
@@ -845,6 +1160,8 @@ func memoryCmd(args []string) {
 			os.Exit(1)
 		}
 		return
+	} else {
+		args = composeArgs
 	}
 	if len(args) == 0 {
 		memoryUsage()
@@ -877,6 +1194,8 @@ func syncCmd(args []string) {
 			os.Exit(1)
 		}
 		return
+	} else {
+		args = composeArgs
 	}
 	if len(args) == 0 {
 		syncUsage()
@@ -904,38 +1223,59 @@ func syncCmd(args []string) {
 func timerUsage() {
 	fmt.Fprintln(os.Stderr, "Timer Usage:")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd timer start [--docker-compose] [--node-bin node] [--repo .] [--poll-interval 30s]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer list [--docker-compose] [--repo .] --account assistant")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer show <id> [--docker-compose] [--repo .] --account assistant")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer run <id> [--docker-compose] [--node-bin node] [--repo .] --account assistant")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer logs <id> [--docker-compose] [--repo .] --account assistant [--lines 80]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer enable <id> [--docker-compose] [--repo .] --account assistant")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer disable <id> [--docker-compose] [--repo .] --account assistant")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer delete <id> [--docker-compose] [--repo .] --account assistant")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer upsert [--docker-compose] --id <id> --account assistant --chat-id oc_xxx (--every 1h | --daily 09:00 | --weekly mon,tue --at 09:00) --prompt \"...\" [--cwd workspace/assistant] [--add-dir workspace/shared] [--tz Asia/Shanghai] [--disable]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd timer update <id> [--docker-compose] --account assistant [--prompt \"...\"] [--every 1h | --daily 09:00 | --weekly mon,tue --at 09:00] [--cwd workspace/assistant] [--chat-id oc_xxx] [--add-dir workspace/shared] [--clear-add-dirs] [--enable|--disable]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer list [--docker-compose] [--repo .] --account <account>")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer show <id> [--docker-compose] [--repo .] --account <account>")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer run <id> [--docker-compose] [--node-bin node] [--repo .] --account <account>")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer logs <id> [--docker-compose] [--repo .] --account <account> [--lines 80]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer enable <id> [--docker-compose] [--repo .] --account <account>")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer disable <id> [--docker-compose] [--repo .] --account <account>")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer delete <id> [--docker-compose] [--repo .] --account <account>")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer upsert [--docker-compose] --id <id> --account <account> --chat-id oc_xxx (--every 1h | --daily 09:00 | --weekly mon,tue --at 09:00) --prompt \"...\" [--cwd workspace/<account-namespace>] [--add-dir workspace/shared] [--tz Asia/Shanghai] [--disable]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd timer update <id> [--docker-compose] --account <account> [--prompt \"...\"] [--every 1h | --daily 09:00 | --weekly mon,tue --at 09:00] [--cwd workspace/<account-namespace>] [--chat-id oc_xxx] [--add-dir workspace/shared] [--clear-add-dirs] [--enable|--disable]")
+	fmt.Fprintln(os.Stderr, "Notes:")
+	fmt.Fprintln(os.Stderr, "  - In a bot workspace, timer commands can infer --account from .config.toml.")
+	fmt.Fprintln(os.Stderr, "  - Outside a bot workspace, pass --account <account> explicitly.")
 }
 
 func memoryUsage() {
 	fmt.Fprintln(os.Stderr, "Memory Usage:")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd memory add [--docker-compose] --account assistant --text \"...\" [--source feishu/assistant/oc_xxx] [--tag foo] [--tag bar] [--repo .]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd memory list [--docker-compose] --account assistant [--repo .] [--limit 20]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd memory show <id> [--docker-compose] --account assistant [--repo .]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd memory search <keyword> [--docker-compose] --account assistant [--repo .] [--limit 20]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd memory delete <id> [--docker-compose] --account assistant [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory add [--docker-compose] --account <account> --text \"...\" [--source feishu/<account>/oc_xxx] [--tag foo] [--tag bar] [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory list [--docker-compose] --account <account> [--repo .] [--limit 20]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory show <id> [--docker-compose] --account <account> [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory search <keyword> [--docker-compose] --account <account> [--repo .] [--limit 20]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory delete <id> [--docker-compose] --account <account> [--repo .]")
+	fmt.Fprintln(os.Stderr, "Notes:")
+	fmt.Fprintln(os.Stderr, "  - In a bot workspace, memory commands can infer --account from .config.toml.")
+	fmt.Fprintln(os.Stderr, "  - Outside a bot workspace, pass --account <account> explicitly.")
 }
 
 func syncUsage() {
 	fmt.Fprintln(os.Stderr, "Sync Usage:")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd sync status [--docker-compose] [--repo .] --account assistant [--workspace workspace/assistant] [--workspace-id assistant]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd sync list-remote [--docker-compose] [--repo .] --account assistant [--workspace-id assistant]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd sync push [--docker-compose] [--repo .] --account assistant [--workspace workspace/assistant] [--workspace-id assistant] [--provider webdav] [--webdav-url https://dav.example.com/path] [--webdav-username user] [--webdav-password pass] [--webdav-base-path /SunCodexClaw/backups] [--skip-if-unconfigured]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd sync pull [--docker-compose] [--repo .] --account assistant [--workspace-id assistant] [--snapshot latest|20260320T010203Z] --to .runtime/sync/restore/latest")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd sync restore [--docker-compose] [--repo .] --account assistant [--workspace workspace/assistant] [--workspace-id assistant] [--snapshot latest|20260320T010203Z | --from .runtime/sync/restore/latest] [--force]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd sync status [--docker-compose] [--repo .] --account <account> [--workspace workspace/<account-namespace>] [--workspace-id <account>]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd sync list-remote [--docker-compose] [--repo .] --account <account> [--workspace-id <account>]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd sync push [--docker-compose] [--repo .] --account <account> [--workspace workspace/<account-namespace>] [--workspace-id <account>] [--provider webdav] [--webdav-url https://dav.example.com/path] [--webdav-username user] [--webdav-password pass] [--webdav-base-path /SunCodexClaw/backups] [--skip-if-unconfigured]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd sync pull [--docker-compose] [--repo .] --account <account> [--workspace-id <account>] [--snapshot latest|20260320T010203Z] [--to .runtime/sync/restore/<account-namespace>/latest]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd sync restore [--docker-compose] [--repo .] --account <account> [--workspace workspace/<account-namespace>] [--workspace-id <account>] [--snapshot latest|20260320T010203Z | --from .runtime/sync/restore/<account-namespace>/latest] [--force]")
+	fmt.Fprintln(os.Stderr, "Notes:")
+	fmt.Fprintln(os.Stderr, "  - In a bot workspace, sync commands can infer --account from .config.toml.")
+	fmt.Fprintln(os.Stderr, "  - sync pull defaults to .runtime/sync/restore/<account-namespace>/<snapshot> when --to is omitted.")
+}
+
+func launchagentsUsage() {
+	fmt.Fprintln(os.Stderr, "LaunchAgents Usage:")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd launchagents install [--account a] [--account b] [--repo .] [--node-bin node] [--runtime-backend js|go] [--run-mode node|supervisor] [--daemon-bin ./bin/suncodexclawd] [--prefix com.sunbelife.suncodexclaw.feishu] [--codex-bin <path>] [--codex-home <path>] [--path <PATH>] [--keepalive] [--throttle-interval 10]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd launchagents uninstall [--account a] [--account b] [--repo .] [--prefix com.sunbelife.suncodexclaw.feishu]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd launchagents status [--account a] [--account b] [--repo .] [--node-bin node] [--runtime-backend js|go] [--run-mode node|supervisor] [--daemon-bin ./bin/suncodexclawd] [--prefix com.sunbelife.suncodexclaw.feishu] [--codex-bin <path>] [--codex-home <path>] [--path <PATH>] [--keepalive] [--throttle-interval 10]")
+	fmt.Fprintln(os.Stderr, "Notes:")
+	fmt.Fprintln(os.Stderr, "  - launchagents is a local/macOS deployment helper and does not support --docker-compose.")
+	fmt.Fprintln(os.Stderr, "  - Local mode is the default; passing --local is optional and only makes the mode explicit.")
+	fmt.Fprintln(os.Stderr, "  - Omitting --account defaults to enabled accounts for install, and all configured accounts for uninstall/status.")
 }
 
 func timerStart(args []string) {
 	fs := flag.NewFlagSet("timer start", flag.ExitOnError)
 	nodeBin := fs.String("node-bin", getenvDefault("NODE_BIN", "node"), "node binary")
+	runtimeBackend := fs.String("runtime-backend", normalizeRuntimeBackend(getenvDefault("SUNCODEXCLAW_FEISHU_RUNTIME", "js")), "feishu runtime backend: js | go")
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	pollInterval := fs.Duration("poll-interval", 30*time.Second, "poll interval")
 	_ = fs.Parse(args)
@@ -949,10 +1289,11 @@ func timerStart(args []string) {
 		cancel()
 	}()
 	mgr := timer.NewManager(timer.Options{
-		RepoRoot:     repo,
-		NodeBin:      *nodeBin,
-		PollInterval: *pollInterval,
-		Output:       os.Stdout,
+		RepoRoot:       repo,
+		NodeBin:        *nodeBin,
+		RuntimeBackend: *runtimeBackend,
+		PollInterval:   *pollInterval,
+		Output:         os.Stdout,
 	})
 	if err := mgr.Run(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -999,6 +1340,7 @@ func timerList(args []string) {
 }
 
 func timerShow(args []string) {
+	args = reorderFlagsBeforePositionals(args, nil)
 	fs := flag.NewFlagSet("timer show", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	account := fs.String("account", "", "timer namespace / robot account name")
@@ -1033,6 +1375,7 @@ func timerShow(args []string) {
 }
 
 func timerDelete(args []string) {
+	args = reorderFlagsBeforePositionals(args, nil)
 	fs := flag.NewFlagSet("timer delete", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	account := fs.String("account", "", "timer namespace / robot account name")
@@ -1056,6 +1399,10 @@ func timerDelete(args []string) {
 }
 
 func timerEnableDisable(args []string, enabled bool) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{
+		"--enable":  true,
+		"--disable": true,
+	})
 	name := "timer enable"
 	if !enabled {
 		name = "timer disable"
@@ -1088,8 +1435,10 @@ func timerEnableDisable(args []string, enabled bool) {
 }
 
 func timerRun(args []string) {
+	args = reorderFlagsBeforePositionals(args, nil)
 	fs := flag.NewFlagSet("timer run", flag.ExitOnError)
 	nodeBin := fs.String("node-bin", getenvDefault("NODE_BIN", "node"), "node binary")
+	runtimeBackend := fs.String("runtime-backend", normalizeRuntimeBackend(getenvDefault("SUNCODEXCLAW_FEISHU_RUNTIME", "js")), "feishu runtime backend: js | go")
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	account := fs.String("account", "", "timer namespace / robot account name")
 	_ = fs.Parse(args)
@@ -1104,9 +1453,10 @@ func timerRun(args []string) {
 		os.Exit(1)
 	}
 	mgr := timer.NewManager(timer.Options{
-		RepoRoot: repo,
-		NodeBin:  *nodeBin,
-		Output:   os.Stdout,
+		RepoRoot:       repo,
+		NodeBin:        *nodeBin,
+		RuntimeBackend: *runtimeBackend,
+		Output:         os.Stdout,
 	})
 	if err := mgr.RunTaskNow(context.Background(), fs.Arg(0), namespace); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -1116,6 +1466,7 @@ func timerRun(args []string) {
 }
 
 func timerLogs(args []string) {
+	args = reorderFlagsBeforePositionals(args, nil)
 	fs := flag.NewFlagSet("timer logs", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	account := fs.String("account", "", "timer namespace / robot account name")
@@ -1223,6 +1574,11 @@ func timerUpsert(args []string) {
 }
 
 func timerUpdate(args []string) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{
+		"--enable":         true,
+		"--disable":        true,
+		"--clear-add-dirs": true,
+	})
 	fs := flag.NewFlagSet("timer update", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	account := fs.String("account", "", "timer namespace / robot account name")
@@ -1466,7 +1822,7 @@ func memoryAdd(args []string) {
 	_ = fs.Parse(args)
 
 	repo := resolveRepoRoot(*repoFlag)
-	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "sync")
+	resolvedAccount, err := resolveMemoryAccount(strings.TrimSpace(*account))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -1503,7 +1859,7 @@ func memoryList(args []string) {
 	limit := fs.Int("limit", 20, "max memories to show")
 	_ = fs.Parse(args)
 	repo := resolveRepoRoot(*repoFlag)
-	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "sync")
+	resolvedAccount, err := resolveMemoryAccount(strings.TrimSpace(*account))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -1527,6 +1883,7 @@ func memoryList(args []string) {
 }
 
 func memoryShow(args []string) {
+	args = reorderFlagsBeforePositionals(args, nil)
 	fs := flag.NewFlagSet("memory show", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	account := fs.String("account", "", "memory library / robot account name")
@@ -1536,7 +1893,7 @@ func memoryShow(args []string) {
 		os.Exit(2)
 	}
 	repo := resolveRepoRoot(*repoFlag)
-	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "memory")
+	resolvedAccount, err := resolveMemoryAccount(strings.TrimSpace(*account))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -1556,6 +1913,7 @@ func memoryShow(args []string) {
 }
 
 func memorySearch(args []string) {
+	args = reorderFlagsBeforePositionals(args, nil)
 	fs := flag.NewFlagSet("memory search", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	account := fs.String("account", "", "memory library / robot account name")
@@ -1567,7 +1925,7 @@ func memorySearch(args []string) {
 		os.Exit(2)
 	}
 	repo := resolveRepoRoot(*repoFlag)
-	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "memory")
+	resolvedAccount, err := resolveMemoryAccount(strings.TrimSpace(*account))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -1588,6 +1946,7 @@ func memorySearch(args []string) {
 }
 
 func memoryDelete(args []string) {
+	args = reorderFlagsBeforePositionals(args, nil)
 	fs := flag.NewFlagSet("memory delete", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	account := fs.String("account", "", "memory library / robot account name")
@@ -1597,7 +1956,7 @@ func memoryDelete(args []string) {
 		os.Exit(2)
 	}
 	repo := resolveRepoRoot(*repoFlag)
-	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "memory")
+	resolvedAccount, err := resolveMemoryAccount(strings.TrimSpace(*account))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -1797,10 +2156,6 @@ func syncPullCmd(args []string) {
 	webdavPassword := fs.String("webdav-password", "", "webdav password")
 	webdavBasePath := fs.String("webdav-base-path", "", "remote base path under webdav")
 	_ = fs.Parse(args)
-	if strings.TrimSpace(*targetDir) == "" {
-		fmt.Fprintln(os.Stderr, "error: --to is required")
-		os.Exit(2)
-	}
 
 	repo := resolveRepoRoot(*repoFlag)
 	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "sync")
@@ -1824,7 +2179,10 @@ func syncPullCmd(args []string) {
 		fmt.Fprintln(os.Stderr, "error: sync backend is not configured")
 		os.Exit(1)
 	}
-	target := *targetDir
+	target := strings.TrimSpace(*targetDir)
+	if target == "" {
+		target = defaultSyncPullTarget(resolvedAccount, strings.TrimSpace(*snapshot))
+	}
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(repo, target)
 	}
@@ -2047,8 +2405,23 @@ func resolveScopedAccount(explicit string, scope string) (string, error) {
 		if strings.TrimSpace(account) != "" {
 			return account, nil
 		}
+		if strings.TrimSpace(cfgPath) != "" {
+			return "", fmt.Errorf("--account <account> is required; no %s account was found in %s. Run the command inside a bot workspace with .config.toml or pass --account explicitly", emptyFallback(strings.TrimSpace(scope), "runtime"), cfgPath)
+		}
 	}
-	return "", fmt.Errorf("--account <account> is required")
+	return "", fmt.Errorf("--account <account> is required; run the command inside a bot workspace with .config.toml or pass --account explicitly")
+}
+
+func resolveMemoryAccount(explicit string) (string, error) {
+	return resolveScopedAccount(explicit, "memory")
+}
+
+func defaultSyncPullTarget(account string, snapshot string) string {
+	snapshot = strings.TrimSpace(snapshot)
+	if snapshot == "" {
+		snapshot = "latest"
+	}
+	return filepath.Join(".runtime", "sync", "restore", sanitizePathSegment(account), sanitizePathSegment(snapshot))
 }
 
 type syncFlagConfig struct {
@@ -2063,79 +2436,20 @@ type syncFlagConfig struct {
 }
 
 func loadSyncConfig(repo, account string, flags syncFlagConfig) (worksync.Config, string, error) {
-	store := configstore.NewStore(repo)
-	secretDefault, _ := store.ReadSecretsEntry("sync", "default")
-	secretAccount, _ := store.ReadSecretsEntry("sync", account)
-	workspaceDir, err := resolveSyncWorkspaceDir(repo, account, flags.Workspace, store)
-	if err != nil {
-		return worksync.Config{}, "", err
-	}
-	cfg := worksync.Config{
-		Provider:       firstNonEmpty(strings.TrimSpace(flags.Provider), strings.TrimSpace(os.Getenv("SUNCODEXCLAW_SYNC_PROVIDER")), strings.TrimSpace(getNestedString(secretAccount, "provider")), strings.TrimSpace(getNestedString(secretDefault, "provider")), "webdav"),
-		WebDAVURL:      firstNonEmpty(strings.TrimSpace(flags.WebDAVURL), strings.TrimSpace(os.Getenv("SUNCODEXCLAW_SYNC_WEBDAV_URL")), strings.TrimSpace(getNestedString(secretAccount, "webdav", "url")), strings.TrimSpace(getNestedString(secretDefault, "webdav", "url"))),
-		WebDAVUsername: firstNonEmpty(strings.TrimSpace(flags.WebDAVUsername), strings.TrimSpace(os.Getenv("SUNCODEXCLAW_SYNC_WEBDAV_USERNAME")), strings.TrimSpace(getNestedString(secretAccount, "webdav", "username")), strings.TrimSpace(getNestedString(secretDefault, "webdav", "username"))),
-		WebDAVPassword: firstNonEmpty(strings.TrimSpace(flags.WebDAVPassword), strings.TrimSpace(os.Getenv("SUNCODEXCLAW_SYNC_WEBDAV_PASSWORD")), strings.TrimSpace(getNestedString(secretAccount, "webdav", "password")), strings.TrimSpace(getNestedString(secretDefault, "webdav", "password"))),
-		WebDAVBasePath: firstNonEmpty(strings.TrimSpace(flags.WebDAVBasePath), strings.TrimSpace(os.Getenv("SUNCODEXCLAW_SYNC_WEBDAV_BASE_PATH")), strings.TrimSpace(getNestedString(secretAccount, "webdav", "base_path")), strings.TrimSpace(getNestedString(secretDefault, "webdav", "base_path")), "/SunCodexClaw/backups"),
-		WorkspaceID:    firstNonEmpty(strings.TrimSpace(flags.WorkspaceID), strings.TrimSpace(getNestedString(secretAccount, "workspace_id")), defaultSyncWorkspaceID(account)),
-		Timeout:        time.Duration(maxInt(flags.TimeoutSeconds, getenvInt("SUNCODEXCLAW_SYNC_TIMEOUT_SEC", 30))) * time.Second,
-	}
-	return cfg, workspaceDir, nil
+	return feishunative.ResolveSyncConfig(repo, account, feishunative.SyncConfigOptions{
+		Workspace:      flags.Workspace,
+		WorkspaceID:    flags.WorkspaceID,
+		Provider:       flags.Provider,
+		WebDAVURL:      flags.WebDAVURL,
+		WebDAVUsername: flags.WebDAVUsername,
+		WebDAVPassword: flags.WebDAVPassword,
+		WebDAVBasePath: flags.WebDAVBasePath,
+		TimeoutSeconds: maxInt(flags.TimeoutSeconds, getenvInt("SUNCODEXCLAW_SYNC_TIMEOUT_SEC", 30)),
+	})
 }
 
 func defaultSyncWorkspaceID(account string) string {
-	raw := strings.TrimSpace(account)
-	if raw == "" {
-		return "default"
-	}
-	var b strings.Builder
-	for _, r := range raw {
-		switch {
-		case r == '/' || r == '\\' || r == ' ' || r == ':':
-			b.WriteByte('-')
-		case r == '.':
-			b.WriteByte('-')
-		default:
-			b.WriteRune(r)
-		}
-	}
-	out := strings.Trim(b.String(), "-.")
-	if out == "" {
-		return "default"
-	}
-	return out
-}
-
-func resolveSyncWorkspaceDir(repo, account, explicit string, store *configstore.Store) (string, error) {
-	raw := firstNonEmpty(
-		strings.TrimSpace(explicit),
-		strings.TrimSpace(os.Getenv(accountEnvKey(account, "CODEX_CWD"))),
-		strings.TrimSpace(os.Getenv(accountEnvKey(account, "CODEX_CD"))),
-		strings.TrimSpace(os.Getenv("FEISHU_CODEX_CWD")),
-		strings.TrimSpace(os.Getenv("FEISHU_CODEX_CD")),
-	)
-	if raw == "" && store != nil {
-		if overlay, err := store.ReadOverlay(account); err == nil {
-			raw = firstNonEmpty(strings.TrimSpace(getNestedString(overlay, "codex", "cwd")), strings.TrimSpace(getNestedString(overlay, "codex", "cd")))
-		}
-	}
-	if raw == "" && store != nil {
-		if secrets, err := store.ReadSecretsEntry("feishu", account); err == nil {
-			raw = firstNonEmpty(strings.TrimSpace(getNestedString(secrets, "codex", "cwd")), strings.TrimSpace(getNestedString(secrets, "codex", "cd")))
-		}
-	}
-	if raw == "" {
-		candidate := filepath.Join(repo, "workspace")
-		if exists(candidate) {
-			raw = candidate
-		}
-	}
-	if strings.TrimSpace(raw) == "" {
-		return "", fmt.Errorf("workspace dir is not set; use --workspace or FEISHU_CODEX_CWD")
-	}
-	if filepath.IsAbs(raw) {
-		return raw, nil
-	}
-	return filepath.Join(repo, raw), nil
+	return feishunative.DefaultSyncWorkspaceID(account)
 }
 
 func accountEnvKey(account, suffix string) string {
@@ -2239,14 +2553,25 @@ func memorySummaryLine(entry memory.Entry) string {
 }
 
 func launchagents(args []string) {
+	args = stripExplicitLocalFlag(args)
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "error: launchagents requires action install|uninstall|status")
+		launchagentsUsage()
 		os.Exit(2)
 	}
 	action := strings.TrimSpace(args[0])
+	if action == "help" || action == "--help" || action == "-h" {
+		launchagentsUsage()
+		return
+	}
+	if action == "--docker-compose" || findPresentFlag(args, "--docker-compose") != "" {
+		fmt.Fprintln(os.Stderr, "error: launchagents is a local/macOS helper and does not support --docker-compose")
+		launchagentsUsage()
+		os.Exit(2)
+	}
 	args = args[1:]
 
-	fs, accounts, nodeBin, repoFlag := baseFlags("launchagents")
+	fs, accounts, nodeBin, repoFlag, runtimeBackend := baseFlags("launchagents")
 	runMode := fs.String("run-mode", getenvDefault("SUNCODEXCLAW_LAUNCHAGENT_RUN_MODE", "node"), "run mode: node|supervisor")
 	keepAlive := fs.Bool("keepalive", getenvBool("SUNCODEXCLAW_LAUNCHAGENT_KEEPALIVE", true), "launchd keepalive (crash restart); supervisor mode still recommended for precise limits")
 	throttle := fs.Int("throttle-interval", getenvInt("SUNCODEXCLAW_LAUNCHAGENT_THROTTLE_INTERVAL", 10), "launchd ThrottleInterval seconds (>=1)")
@@ -2258,8 +2583,16 @@ func launchagents(args []string) {
 	_ = fs.Parse(args)
 	repo := resolveRepoRoot(*repoFlag)
 
-	sup := supervisor.New(supervisor.Options{RepoRoot: repo, NodeBin: *nodeBin, LaunchctlPrefix: *prefix})
-	accts := normalizeAccountsOrAll(*accounts)
+	sup := supervisor.New(supervisor.Options{RepoRoot: repo, NodeBin: *nodeBin, RuntimeBackend: *runtimeBackend, LaunchctlPrefix: *prefix})
+	accts, err := resolveLaunchAgentAccounts(repo, action, *accounts)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if len(accts) == 0 {
+		fmt.Println("(no configured accounts)")
+		return
+	}
 
 	opts := supervisor.LaunchAgentOptions{
 		RunMode:          *runMode,
@@ -2301,6 +2634,7 @@ func launchagents(args []string) {
 		}
 	default:
 		fmt.Fprintln(os.Stderr, "error: unknown launchagents action:", action)
+		launchagentsUsage()
 		os.Exit(2)
 	}
 }
@@ -2384,6 +2718,53 @@ func normalizeAccountsOrAll(in []string) []string {
 		return nil
 	}
 	return accts
+}
+
+func resolveEnabledAccounts(repo string, requested []string) ([]string, error) {
+	return resolveAccountsWithDefault(repo, requested, true)
+}
+
+func resolveConfiguredAccounts(repo string, requested []string) ([]string, error) {
+	return resolveAccountsWithDefault(repo, requested, false)
+}
+
+func resolveRestartAccounts(repo string, requested []string) ([]string, []string, error) {
+	accts := uniqueAccounts(requested)
+	if len(accts) > 0 {
+		return accts, accts, nil
+	}
+	stopAccounts, err := resolveConfiguredAccounts(repo, requested)
+	if err != nil {
+		return nil, nil, err
+	}
+	startAccounts, err := resolveEnabledAccounts(repo, requested)
+	if err != nil {
+		return nil, nil, err
+	}
+	return stopAccounts, startAccounts, nil
+}
+
+func resolveLaunchAgentAccounts(repo string, action string, requested []string) ([]string, error) {
+	switch strings.TrimSpace(action) {
+	case "install":
+		return resolveEnabledAccounts(repo, requested)
+	case "uninstall", "status":
+		return resolveConfiguredAccounts(repo, requested)
+	default:
+		return uniqueAccounts(requested), nil
+	}
+}
+
+func resolveAccountsWithDefault(repo string, requested []string, enabledOnly bool) ([]string, error) {
+	accts := uniqueAccounts(requested)
+	if len(accts) > 0 {
+		return accts, nil
+	}
+	store := configstore.NewStore(repo)
+	if enabledOnly {
+		return store.ListEnabledAccountNames()
+	}
+	return store.ListConfiguredAccountNames()
 }
 
 func uniqueAccounts(values []string) []string {

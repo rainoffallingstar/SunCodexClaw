@@ -1,8 +1,11 @@
 package timer
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -189,5 +192,92 @@ func TestStoreSeparatesStateAndLogsByAccountNamespace(t *testing.T) {
 	}
 	if helperLog != "helper log" {
 		t.Fatalf("helper log = %q, want helper log", helperLog)
+	}
+}
+
+func TestRuntimeCommandUsesGoBackend(t *testing.T) {
+	mgr := NewManager(Options{
+		RepoRoot:       "/repo",
+		NodeBin:        "node",
+		RuntimeBackend: "go",
+	})
+	cmd, err := mgr.runtimeCommand(context.Background(), "assistant", "/repo/config/timers/assistant/daily.json")
+	if err != nil {
+		t.Fatalf("runtimeCommand() error = %v", err)
+	}
+	if got := filepath.Base(cmd.Path); got != filepath.Base(os.Args[0]) {
+		t.Fatalf("cmd.Path = %q, want current executable", cmd.Path)
+	}
+	joined := strings.Join(cmd.Args, " ")
+	if !strings.Contains(joined, "feishu-run --repo /repo --account assistant --timer-task-file /repo/config/timers/assistant/daily.json") {
+		t.Fatalf("unexpected args: %v", cmd.Args)
+	}
+}
+
+func TestRuntimeCommandUsesJSBackend(t *testing.T) {
+	mgr := NewManager(Options{
+		RepoRoot:       "/repo",
+		NodeBin:        "node",
+		RuntimeBackend: "js",
+	})
+	cmd, err := mgr.runtimeCommand(context.Background(), "assistant", "/repo/config/timers/assistant/daily.json")
+	if err != nil {
+		t.Fatalf("runtimeCommand() error = %v", err)
+	}
+	if got := filepath.Base(cmd.Path); got != "node" {
+		t.Fatalf("cmd.Path = %q, want basename node", cmd.Path)
+	}
+	joined := strings.Join(cmd.Args, " ")
+	if !strings.Contains(joined, "/repo/tools/feishu_ws_bot.js --account assistant --timer-task-file /repo/config/timers/assistant/daily.json") {
+		t.Fatalf("unexpected args: %v", cmd.Args)
+	}
+}
+
+func TestFormatTimerTaskStartLine(t *testing.T) {
+	now := time.Date(2026, 3, 20, 10, 30, 0, 0, time.UTC)
+	task := Task{
+		ID:             "daily-report",
+		Action:         "feishu_codex",
+		Account:        "assistant",
+		StorageAccount: "assistant",
+		ChatID:         "oc_x",
+	}
+	line := formatTimerTaskStartLine(now, task, now.Add(time.Hour), "go")
+	for _, want := range []string{
+		"timer_started",
+		"id=daily-report",
+		"action=feishu_codex",
+		"account=assistant",
+		"namespace=assistant",
+		"runtime_backend=go",
+		"chat_id=oc_x",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("line %q missing %q", line, want)
+		}
+	}
+}
+
+func TestFormatTimerTaskFinishLine(t *testing.T) {
+	now := time.Date(2026, 3, 20, 10, 35, 0, 0, time.UTC)
+	task := Task{
+		ID:             "daily-report",
+		Action:         "sync_push",
+		Account:        "assistant",
+		StorageAccount: "assistant",
+	}
+	line := formatTimerTaskFinishLine(now, task, 1, 2500*time.Millisecond, errors.New("boom\nstack"))
+	for _, want := range []string{
+		"timer_finished",
+		"id=daily-report",
+		"action=sync_push",
+		"status=error",
+		"exit_code=1",
+		"duration_ms=2500",
+		"error=boom stack",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("line %q missing %q", line, want)
+		}
 	}
 }
