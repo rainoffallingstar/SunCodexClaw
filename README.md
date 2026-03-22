@@ -12,9 +12,10 @@
 - 本机模式下，`status/stop` 不带 `--account` 时默认处理所有已配置机器人，包括 `enabled = false` 但仍有状态残留的机器人
 - 本机模式下，`restart` 不带 `--account` 时会先停止所有已配置机器人，再只启动 `enabled = true` 的机器人
 - Compose 模式下，`start/status/stop/restart/logs` 操作的是整个 `suncodexclaw` 容器服务，不按单个账号筛选
-- `list/configure/timer/memory/sync` 也支持 `--docker-compose`
+- `list/configure/timer/memory/env/clawhub/sync` 也支持 `--docker-compose`
+- `workspace-docs refresh` 也支持 `--docker-compose`
 - `list` 会列出所有已配置机器人及其 `enabled/disabled` 状态
-- `timer/memory/sync` 这类账号作用域命令在仓库根目录下建议显式带 `--account`，在机器人工作目录中可依赖 `.config.toml` 自动判定
+- `timer/memory/env/sync` 这类账号作用域命令在仓库根目录下建议显式带 `--account`，在机器人工作目录中可依赖 `.config.toml` 自动判定
 
 ## 你需要准备
 
@@ -436,15 +437,20 @@ suncodexclawd configure --docker-compose --account <account>
 suncodexclawd configure edit --docker-compose --account <account>
 suncodexclawd timer list --docker-compose --account <account>
 suncodexclawd memory search 中文 --docker-compose --account <account>
+suncodexclawd env list --docker-compose --account <account>
+suncodexclawd clawhub search --docker-compose "timer skill"
 suncodexclawd sync status --docker-compose --account <account>
+suncodexclawd workspace-docs refresh --docker-compose --account <account>
 ```
 
 如果你已经位于某个机器人自己的工作目录里，也可以直接依赖 `.config.toml`：
 
 ```bash
 suncodexclawd memory list
+suncodexclawd env list
 suncodexclawd timer list
 suncodexclawd sync status
+suncodexclawd workspace-docs refresh
 ```
 
 ## macOS 开机常驻
@@ -559,6 +565,87 @@ suncodexclawd memory delete mem-20260320-090000-000 --account <account>
 说明：
 
 - `/memory` 默认操作当前机器人账号自己的独立记忆库
+
+## 环境变量库
+
+内置 `env` 子系统用于按 `global` 或机器人 `account` 作用域保存敏感配置。
+
+适合存放：
+
+- API key
+- token / cookie
+- 私有 endpoint
+- 不希望写进普通文档或聊天记录的环境变量
+
+常用命令：
+
+```bash
+suncodexclawd env set --account <account> --key OPENAI_API_KEY --value 'sk-...'
+suncodexclawd env get --account <account> OPENAI_API_KEY
+suncodexclawd env list --account <account>
+suncodexclawd env run --account <account> --key OPENAI_API_KEY -- your-command
+```
+
+说明：
+
+- `env get` / `env list` 默认脱敏显示，不会直接回显明文
+- `env run` 在指定 `--account` 时会先注入 `global`，再注入该账号自己的变量；同名时账号作用域优先
+- 在机器人工作目录里执行账号作用域命令时，可依赖 `.config.toml` 自动识别 `--account`
+
+## 飞书里的 `/env`
+
+机器人支持直接在飞书里用 `/env` 管理敏感配置，例如：
+
+- `/env list`
+- `/env list global`
+- `/env get OPENAI_API_KEY`
+- `/env set OPENAI_API_KEY sk-...`
+- `/env delete OPENAI_API_KEY`
+
+说明：
+
+- `/env` 默认操作当前机器人账号自己的账号作用域
+- `/env list` 默认会同时显示当前账号作用域和 `global` 作用域
+- 返回值默认脱敏，不会在聊天里直接泄漏明文
+
+## ClawHub 技能检索
+
+内置 `clawhub` 子命令可直接从 ClawHub 检索公开 skills。
+
+常用命令：
+
+```bash
+suncodexclawd clawhub search "timer skill"
+suncodexclawd clawhub list --sort updated
+suncodexclawd clawhub show openclaw/universal-skills-manager
+suncodexclawd clawhub file openclaw/universal-skills-manager --path SKILL.md
+```
+
+说明：
+
+- 推荐流程是先 `search` 找候选，再 `show` 看元数据，最后用 `file --path SKILL.md` 读具体技能说明
+- 也支持 `--docker-compose`
+- 默认访问 `https://clawhub.ai`，可通过 `--base-url` 或 `CLAWHUB_BASE_URL` 覆盖
+
+## 工作区文档刷新
+
+如果你希望忽略远端 WebDAV 当前快照，直接把工作区文档刷新成当前代码内置的最新模板，可以使用：
+
+```bash
+suncodexclawd workspace-docs refresh --account <account>
+```
+
+如果已经在对应机器人工作目录里，也可以直接：
+
+```bash
+suncodexclawd workspace-docs refresh
+```
+
+说明：
+
+- 该命令会跳过 restore，直接覆盖 `agent.md`、`soul.md`、`heartbeats.md`
+- 同时会刷新 `.config.toml`
+- 飞书里也支持 `/docs refresh` 或 `/workspace-docs refresh`
 
 ## 文档同步与备份
 
