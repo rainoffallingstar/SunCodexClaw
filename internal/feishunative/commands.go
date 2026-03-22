@@ -181,6 +181,23 @@ func parseEnvCommand(text string) *adminCommand {
 	return &adminCommand{Kind: "env", Action: "help"}
 }
 
+func parseWorkspaceDocsCommand(text string) *adminCommand {
+	raw := normalizeCommandText(text)
+	if raw == "" {
+		return nil
+	}
+	if regexp.MustCompile(`^/(?:workspace-docs|docs)(?:\s|$)`).MatchString(raw) {
+		switch {
+		case regexp.MustCompile(`^/(?:workspace-docs|docs)(?:\s+help)?$`).MatchString(raw):
+			return &adminCommand{Kind: "workspace-docs", Action: "help"}
+		case regexp.MustCompile(`^/(?:workspace-docs|docs)\s+refresh$`).MatchString(raw):
+			return &adminCommand{Kind: "workspace-docs", Action: "refresh"}
+		}
+		return &adminCommand{Kind: "workspace-docs", Action: "help"}
+	}
+	return nil
+}
+
 func normalizeCommandText(text string) string {
 	return strings.TrimSpace(strings.ReplaceAll(text, "\u00a0", " "))
 }
@@ -201,6 +218,9 @@ func handleAdminCommand(ctx context.Context, cfg Config, chatID string, command 
 		return true, reply, err
 	case "sync":
 		reply, err := handleSyncCommand(ctx, cfg, command)
+		return true, reply, err
+	case "workspace-docs":
+		reply, err := handleWorkspaceDocsCommand(ctx, cfg, command)
 		return true, reply, err
 	default:
 		return false, "", nil
@@ -352,6 +372,21 @@ func handleEnvCommand(ctx context.Context, cfg Config, chatID string, command *a
 		return runAdminCommand(ctx, cfg.RepoRoot, 30*time.Second, args...)
 	default:
 		return formatEnvHelp(), nil
+	}
+}
+
+func handleWorkspaceDocsCommand(ctx context.Context, cfg Config, command *adminCommand) (string, error) {
+	account, err := requireAdminCommandAccount(cfg)
+	if err != nil {
+		return "", err
+	}
+	switch command.Action {
+	case "help":
+		return formatWorkspaceDocsHelp(), nil
+	case "refresh":
+		return runAdminCommand(ctx, cfg.RepoRoot, 60*time.Second, "workspace-docs", "refresh", "--account", account)
+	default:
+		return formatWorkspaceDocsHelp(), nil
 	}
 }
 
@@ -528,5 +563,19 @@ func formatEnvHelp() string {
 		"/env 默认操作当前机器人账号自己的账号作用域。",
 		"/env list 默认会同时显示当前账号作用域和 global 作用域。",
 		"/env get / list / set 的返回值默认都是脱敏的，不会直接回显明文。",
+	}, "\n")
+}
+
+func formatWorkspaceDocsHelp() string {
+	return strings.Join([]string{
+		"工作区文档命令：",
+		"/docs help",
+		"/docs refresh",
+		"/workspace-docs help",
+		"/workspace-docs refresh",
+		"",
+		"说明：",
+		"/docs refresh 会跳过 WebDAV restore，直接用当前代码内置的最新模板覆盖 agent.md、soul.md、heartbeats.md，并刷新 .config.toml。",
+		"/docs refresh 默认操作当前机器人账号绑定的工作目录。",
 	}, "\n")
 }

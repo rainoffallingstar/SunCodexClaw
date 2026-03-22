@@ -485,6 +485,7 @@ func handleMessageEvent(ctx context.Context, client *lark.Client, cfg Config, en
 	chatState := ensureChatState(chatStateKey)
 	if messageType == "text" {
 		for _, command := range []*adminCommand{
+			parseWorkspaceDocsCommand(userText),
 			parseSyncCommand(userText),
 			parseMemoryCommand(userText),
 			parseEnvCommand(userText),
@@ -503,6 +504,8 @@ func handleMessageEvent(ctx context.Context, client *lark.Client, cfg Config, en
 					prefix = "记忆命令执行失败"
 				case "timer":
 					prefix = "定时任务命令执行失败"
+				case "workspace-docs":
+					prefix = "工作区文档命令执行失败"
 				}
 				fmt.Printf("reply=error mode=%s_command type=%s message=%s\n", command.Kind, command.Action, compactText(err.Error(), 400))
 				_ = sendTextReply(ctx, client, chatID, prefix+"："+err.Error())

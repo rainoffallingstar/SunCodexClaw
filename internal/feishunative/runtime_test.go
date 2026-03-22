@@ -144,6 +144,16 @@ func TestEnsureRuntimeWorkspaceCreatesDocs(t *testing.T) {
 	if !strings.Contains(string(configBody), `sync_workspace_id = "assistant-private"`) {
 		t.Fatalf(".config.toml missing resolved sync workspace id:\n%s", string(configBody))
 	}
+	agentBody, err := os.ReadFile(filepath.Join(workspace, "agent.md"))
+	if err != nil {
+		t.Fatalf("ReadFile(agent.md) error = %v", err)
+	}
+	if !strings.Contains(string(agentBody), "suncodexclawd env set|get|list|delete|run") {
+		t.Fatalf("agent.md missing env usage:\n%s", string(agentBody))
+	}
+	if !strings.Contains(string(agentBody), "suncodexclawd clawhub search|list|show|file") {
+		t.Fatalf("agent.md missing clawhub usage:\n%s", string(agentBody))
+	}
 	timerPath := filepath.Join(repo, "config", "timers", "assistant", "workspace-doc-sync.json")
 	if _, err := os.Stat(timerPath); err != nil {
 		t.Fatalf("default sync timer not created: %v", err)
@@ -211,6 +221,52 @@ func TestEnsureRuntimeWorkspaceUsesSanitizedMemoryAndTimerPaths(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(repo, "config", "timers", "assistant-bot", "workspace-doc-sync.json")); err != nil {
 		t.Fatalf("sanitized default sync timer not created: %v", err)
+	}
+}
+
+func TestEnsureRuntimeWorkspaceWithOptionsOverwritesDocsWithoutRestore(t *testing.T) {
+	repo := t.TempDir()
+	workspace := filepath.Join(repo, "workspace", "assistant")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"agent.md", "soul.md", "heartbeats.md"} {
+		if err := os.WriteFile(filepath.Join(workspace, name), []byte("stale\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+	cfg := Config{
+		RepoRoot:       repo,
+		AccountName:    "assistant",
+		ConfigPath:     filepath.Join(repo, "config", "feishu", "bots.toml"),
+		BotName:        "助手",
+		MentionAliases: []string{"助手"},
+		Progress:       ProgressConfig{Mode: "doc"},
+		Codex:          CodexConfig{Cwd: workspace},
+	}
+
+	result, err := EnsureRuntimeWorkspaceWithOptions(repo, cfg, WorkspaceInitOptions{
+		AttemptRestore: false,
+		OverwriteDocs:  true,
+	})
+	if err != nil {
+		t.Fatalf("EnsureRuntimeWorkspaceWithOptions() error = %v", err)
+	}
+	if result.RestoreAttempted {
+		t.Fatalf("RestoreAttempted = true, want false")
+	}
+	if len(result.OverwrittenDocs) != 3 {
+		t.Fatalf("overwritten docs = %d, want 3", len(result.OverwrittenDocs))
+	}
+	agentBody, err := os.ReadFile(filepath.Join(workspace, "agent.md"))
+	if err != nil {
+		t.Fatalf("ReadFile(agent.md) error = %v", err)
+	}
+	if strings.Contains(string(agentBody), "stale") {
+		t.Fatalf("agent.md was not overwritten:\n%s", string(agentBody))
+	}
+	if !strings.Contains(string(agentBody), "SunCodexClaw workspace agent") {
+		t.Fatalf("agent.md missing refreshed template:\n%s", string(agentBody))
 	}
 }
 
@@ -302,6 +358,8 @@ func TestParseAdminCommands(t *testing.T) {
 		{"sync pull", "/sync pull latest", "sync", "pull", "", "", "", "", ""},
 		{"env set", "/env set OPENAI_API_KEY sk-test", "env", "set", "account", "OPENAI_API_KEY", "sk-test", "", ""},
 		{"env get global", "/env get global SHARED_KEY", "env", "get", "global", "SHARED_KEY", "", "", ""},
+		{"docs refresh", "/docs refresh", "workspace-docs", "refresh", "", "", "", "", ""},
+		{"workspace docs help", "/workspace-docs", "workspace-docs", "help", "", "", "", "", ""},
 	}
 
 	for _, tt := range tests {
@@ -316,6 +374,8 @@ func TestParseAdminCommands(t *testing.T) {
 				cmd = parseEnvCommand(tt.text)
 			case "sync":
 				cmd = parseSyncCommand(tt.text)
+			case "workspace-docs":
+				cmd = parseWorkspaceDocsCommand(tt.text)
 			}
 			if cmd == nil {
 				t.Fatalf("command is nil")
@@ -988,6 +1048,16 @@ func TestBuildSyncAdminArgsRequiresAccount(t *testing.T) {
 	args := buildSyncAdminArgs(&adminCommand{Kind: "sync", Action: "status"}, "")
 	if args != nil {
 		t.Fatalf("buildSyncAdminArgs() = %v, want nil", args)
+	}
+}
+
+func TestFormatWorkspaceDocsHelpMentionsRefresh(t *testing.T) {
+	text := formatWorkspaceDocsHelp()
+	if !strings.Contains(text, "/docs refresh") {
+		t.Fatalf("help missing /docs refresh:\n%s", text)
+	}
+	if !strings.Contains(text, "跳过 WebDAV restore") {
+		t.Fatalf("help missing restore note:\n%s", text)
 	}
 }
 

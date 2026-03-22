@@ -20,6 +20,7 @@ type WorkspaceInitResult struct {
 	ConfigPath             string
 	ConfigWritten          bool
 	CreatedDocs            []string
+	OverwrittenDocs        []string
 	GitInitialized         bool
 	RestoreAttempted       bool
 	RestoreSucceeded       bool
@@ -30,7 +31,18 @@ type WorkspaceInitResult struct {
 	DefaultSyncTaskID      string
 }
 
+type WorkspaceInitOptions struct {
+	AttemptRestore bool
+	OverwriteDocs  bool
+}
+
 func EnsureRuntimeWorkspace(repoRoot string, cfg Config) (WorkspaceInitResult, error) {
+	return EnsureRuntimeWorkspaceWithOptions(repoRoot, cfg, WorkspaceInitOptions{
+		AttemptRestore: true,
+	})
+}
+
+func EnsureRuntimeWorkspaceWithOptions(repoRoot string, cfg Config, opts WorkspaceInitOptions) (WorkspaceInitResult, error) {
 	dir := resolveOptionalDir(cfg.Codex.Cwd)
 	if dir == "" {
 		return WorkspaceInitResult{}, nil
@@ -78,7 +90,7 @@ func EnsureRuntimeWorkspace(repoRoot string, cfg Config) (WorkspaceInitResult, e
 	}
 
 	missingBefore := listMissingRuntimeDocs(dir)
-	if len(missingBefore) > 0 {
+	if opts.AttemptRestore && len(missingBefore) > 0 {
 		restore, err := tryRestoreRuntimeDocs(repoRoot, dir, account)
 		if err != nil {
 			return result, err
@@ -97,15 +109,22 @@ func EnsureRuntimeWorkspace(repoRoot string, cfg Config) (WorkspaceInitResult, e
 	docs := renderDefaultRuntimeDocs(account)
 	for name, content := range docs {
 		target := filepath.Join(dir, name)
-		if _, err := os.Stat(target); err == nil {
-			continue
-		} else if !os.IsNotExist(err) {
+		_, err := os.Stat(target)
+		exists := err == nil
+		if err != nil && !os.IsNotExist(err) {
 			return result, err
+		}
+		if exists && !opts.OverwriteDocs {
+			continue
 		}
 		if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
 			return result, err
 		}
-		result.CreatedDocs = append(result.CreatedDocs, target)
+		if exists {
+			result.OverwrittenDocs = append(result.OverwrittenDocs, target)
+		} else {
+			result.CreatedDocs = append(result.CreatedDocs, target)
+		}
 	}
 
 	taskPath, created, err := ensureDefaultWorkspaceSyncTask(repoRoot, dir, account, syncWorkspaceID)
@@ -140,12 +159,14 @@ func renderDefaultRuntimeDocs(account string) map[string]string {
 			"",
 			"- 服务管理：使用 `suncodexclawd status|start|stop|restart|logs|list` 查看和管理机器人账号运行状态；其中 `list` 会显示各账号的 enabled/disabled 状态",
 			"- 记忆系统：使用 `suncodexclawd memory add|list|show|search|delete --account " + resolved + "` 管理当前机器人独立的长期记忆库；如果当前就在本目录，也可以省略 `--account`",
+			"- 环境变量库：使用 `suncodexclawd env set|get|list|delete|run` 管理敏感配置；在本目录执行账号作用域命令时可直接依赖 `.config.toml` 推断当前账号，传递密钥给其他命令时优先使用 `env run`",
 			"- 定时任务：使用 `suncodexclawd timer list|show|upsert|update|run|logs|enable|disable|delete` 管理计划任务；在本目录可省略 `--account`",
+			"- 技能检索：使用 `suncodexclawd clawhub search|list|show|file` 从 ClawHub 检索公开技能；通常先 `search` 找候选，再用 `show` 或 `file --path SKILL.md` 阅读详情",
 			"- 文档同步：使用 `suncodexclawd sync status|list-remote|push|pull|restore` 备份或恢复 `agent.md`、`soul.md`、`heartbeats.md`；在本目录可省略 `--account`",
 			"- 默认同步任务：首次启动当前工作目录时，SunCodexClaw 会自动创建 `workspace-doc-sync`，每 24 小时备份一次这 3 份核心文档",
 			"- 配置维护：使用 `suncodexclawd configure --account <bot>` 初始化配置，使用 `suncodexclawd configure edit --account <bot>` 回填或修改已有 TOML 配置",
 			"- 本机模式：默认就是本机模式；如果只是想显式声明这一点，也可以补 `--local`",
-			"- Compose 模式：如果你在宿主机上工作，也可以给 `list/configure/timer/memory/sync` 加 `--docker-compose`；服务已运行时优先 `exec`，未运行时会先 `pull`，只有拉取失败时才回退到 `run --rm --workdir /app --build`",
+			"- Compose 模式：如果你在宿主机上工作，也可以给 `list/configure/timer/memory/env/clawhub/sync` 加 `--docker-compose`；服务已运行时优先 `exec`，未运行时会先 `pull`，只有拉取失败时才回退到 `run --rm --workdir /app --build`",
 			"- Compose 生命周期：`start|status|stop|restart|logs --docker-compose` 管理的是整个 `suncodexclaw` 容器服务，不按单个机器人账号筛选",
 			"- macOS 常驻：如果当前部署跑在 macOS 宿主机上，可用 `suncodexclawd launchagents install|status|uninstall --account <bot>` 管理 launchd 常驻；这属于本机模式能力，不走 `--docker-compose`",
 			"- 自更新：使用 `suncodexclawd update --check` 检查更新，使用 `suncodexclawd update` 更新本地守护进程；如果是 Compose 部署，使用 `suncodexclawd update --docker-compose`，不在项目根目录时补 `--project-dir <repo>`",

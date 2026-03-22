@@ -282,6 +282,7 @@ suncodexclawd logs --docker-compose -f
 - 本机模式下，`restart` 不带 `--account` 时，会先停止所有已配置机器人，再只启动 `enabled = true` 的机器人
 - 如果某个机器人暂时不想启动，直接在 `[bot.<account>]` 下设置 `enabled = false`
 - `list/configure/timer/memory/env/clawhub/sync` 也支持显式 `--docker-compose`
+- `workspace-docs refresh` 也支持显式 `--docker-compose`
 - 这些工具型命令在 Compose 模式下会优先执行 `docker compose exec suncodexclaw suncodexclawd <subcommand> ...`
 - 如果 Compose 服务还没启动，会先尝试 `docker compose pull suncodexclaw` 后再执行 `docker compose run --rm --workdir /app suncodexclaw <subcommand> ...`
 - 只有拉取失败时，才会回退到 `docker compose run --rm --workdir /app --build suncodexclaw <subcommand> ...`
@@ -364,6 +365,7 @@ SUNCODEXCLAW_SYNC_CODEX_HOME=true
 - 检查 `agent.md`、`soul.md`、`heartbeats.md`
 - 如果已配置 WebDAV，同步系统会先尝试 `sync restore`
 - restore 没补齐的文件，才会按默认模板创建
+- 如果你想无视远端当前快照、强制把工作区文档刷新成当前代码内置的最新版模板，可执行 `suncodexclawd workspace-docs refresh --account <account>`
 - 自动创建当前机器人的默认文档同步任务 `workspace-doc-sync`
   - 该任务会沿用当前机器人实际生效的 `sync.workspace_id`
 
@@ -395,8 +397,9 @@ SUNCODEXCLAW_SYNC_CODEX_HOME=true
 默认模板已经和当前实现对齐：
 
 - `agent.md` 会明确说明本目录绑定单一机器人账号
-- `agent.md` 会说明 `timer/memory/sync` 在本目录可直接依赖 `.config.toml` 识别账号
-- `agent.md` 会说明 `list/configure/timer/memory/sync` 支持 `--docker-compose`
+- `agent.md` 会说明 `timer/memory/env/sync` 在本目录可直接依赖 `.config.toml` 识别账号
+- `agent.md` 会包含 `env` 与 `clawhub` 的使用入口
+- `agent.md` 会说明 `list/configure/timer/memory/env/clawhub/sync` 支持 `--docker-compose`
 - `agent.md` 会说明 `configure edit`、显式 `--local`、以及 `launchagents`/`update` 的使用边界
 - `heartbeats.md` 会提醒记录新安装的技能
 

@@ -57,6 +57,8 @@ func main() {
 		launchagents(os.Args[2:])
 	case "configure":
 		configure(os.Args[2:])
+	case "workspace-docs":
+		workspaceDocsCmd(os.Args[2:])
 	case "timer":
 		timerCmd(os.Args[2:])
 	case "memory":
@@ -106,6 +108,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  suncodexclawd configure [--docker-compose] --account <account> [--yes]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd configure add [--docker-compose] --account <account> [--yes]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd configure edit [--docker-compose] --account <account> [--yes]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd workspace-docs refresh [--docker-compose] [--repo .] [--account <account>] [--workspace <dir>]")
 	fmt.Fprintln(os.Stderr, "Notes:")
 	fmt.Fprintln(os.Stderr, "  - Default account selection depends on subcommand: start/preflight use enabled bots; status/stop use all configured bots; restart stops all configured bots then starts enabled bots.")
 	fmt.Fprintln(os.Stderr, "  - Local mode is the default; passing --local is optional and only makes the mode explicit.")
@@ -819,6 +822,79 @@ func configure(args []string) {
 	fmt.Printf("configured_account=%s\n", *account)
 }
 
+func workspaceDocsCmd(args []string) {
+	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
+		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
+		if err := runDockerComposeServiceCommand(repo, "workspace-docs", composeArgs...); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	} else {
+		args = composeArgs
+	}
+	if len(args) == 0 {
+		workspaceDocsUsage()
+		os.Exit(2)
+	}
+	switch strings.TrimSpace(args[0]) {
+	case "refresh":
+		workspaceDocsRefresh(args[1:])
+	case "help", "--help", "-h":
+		workspaceDocsUsage()
+	default:
+		workspaceDocsUsage()
+		os.Exit(2)
+	}
+}
+
+func workspaceDocsUsage() {
+	fmt.Fprintln(os.Stderr, "Workspace Docs Usage:")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd workspace-docs refresh [--docker-compose] [--repo .] [--account <account>] [--workspace <dir>]")
+	fmt.Fprintln(os.Stderr, "Notes:")
+	fmt.Fprintln(os.Stderr, "  - refresh skips WebDAV restore and rewrites agent.md/soul.md/heartbeats.md using the latest built-in templates.")
+	fmt.Fprintln(os.Stderr, "  - If --workspace is omitted, the command uses the bot's configured codex.cwd.")
+	fmt.Fprintln(os.Stderr, "  - In a bot workspace, --account can be inferred from .config.toml.")
+}
+
+func workspaceDocsRefresh(args []string) {
+	fs := flag.NewFlagSet("workspace-docs refresh", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "robot account name")
+	workspace := fs.String("workspace", "", "workspace directory to rewrite")
+	_ = fs.Parse(args)
+
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveScopedAccount(strings.TrimSpace(*account), "workspace")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	cfg, err := feishunative.Load(repo, resolvedAccount)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if strings.TrimSpace(*workspace) != "" {
+		cfg.Codex.Cwd = strings.TrimSpace(*workspace)
+	}
+	result, err := feishunative.EnsureRuntimeWorkspaceWithOptions(repo, cfg, feishunative.WorkspaceInitOptions{
+		AttemptRestore: false,
+		OverwriteDocs:  true,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("workspace=%s\n", emptyFallback(strings.TrimSpace(cfg.Codex.Cwd), "(none)"))
+	fmt.Printf("account=%s\n", resolvedAccount)
+	fmt.Printf("config=%s\n", emptyFallback(result.ConfigPath, "(none)"))
+	fmt.Printf("created_docs=%s\n", emptyFallback(strings.Join(result.CreatedDocs, " | "), "(none)"))
+	fmt.Printf("overwritten_docs=%s\n", emptyFallback(strings.Join(result.OverwrittenDocs, " | "), "(none)"))
+	fmt.Printf("restore_attempted=%t\n", result.RestoreAttempted)
+	fmt.Println("status=ok")
+}
+
 func normalizeConfigureArgs(args []string) []string {
 	if len(args) > 0 {
 		action := strings.TrimSpace(args[0])
@@ -1050,7 +1126,7 @@ func normalizeComposeServiceArgs(subcommand string, args []string) []string {
 		out = append(out, args[i])
 	}
 	switch strings.TrimSpace(subcommand) {
-	case "list", "preflight", "timer", "memory", "sync":
+	case "list", "preflight", "timer", "memory", "sync", "workspace-docs":
 		out = append(out, "--repo", "/app")
 	}
 	return out
