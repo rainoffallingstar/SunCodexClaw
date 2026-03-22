@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"suncodexclaw/internal/envstore"
 	"suncodexclaw/internal/timer"
 )
 
@@ -282,6 +283,68 @@ func TestResolveLaunchAgentAccountsInstallUsesEnabledBots(t *testing.T) {
 	if strings.Join(got, ",") != "assistant" {
 		t.Fatalf("resolveLaunchAgentAccounts() = %v, want [assistant]", got)
 	}
+}
+
+func TestResolveEnvRunEntriesAutoWithAccountMergesGlobalThenAccount(t *testing.T) {
+	repo := t.TempDir()
+	store := envstore.NewStore(repo)
+	if _, err := store.Set(envstore.ScopeGlobal, "", "OPENAI_API_KEY", "global-value", "test"); err != nil {
+		t.Fatalf("store.Set(global) error = %v", err)
+	}
+	if _, err := store.Set(envstore.ScopeAccount, "assistant", "OPENAI_API_KEY", "account-value", "test"); err != nil {
+		t.Fatalf("store.Set(account) error = %v", err)
+	}
+
+	entries, err := resolveEnvRunEntries(store, envstore.ScopeAuto, "assistant", "OPENAI_API_KEY")
+	if err != nil {
+		t.Fatalf("resolveEnvRunEntries() error = %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2", len(entries))
+	}
+	if entries[0].Scope != envstore.ScopeGlobal || entries[0].Value != "global-value" {
+		t.Fatalf("entries[0] = %#v, want global entry first", entries[0])
+	}
+	if entries[1].Scope != envstore.ScopeAccount || entries[1].Account != "assistant" || entries[1].Value != "account-value" {
+		t.Fatalf("entries[1] = %#v, want account entry second", entries[1])
+	}
+
+	childEnv := []string{"OPENAI_API_KEY=original"}
+	for _, entry := range entries {
+		childEnv = appendEnvOverride(childEnv, entry.Key, entry.Value)
+	}
+	if got := findEnvValue(childEnv, "OPENAI_API_KEY"); got != "account-value" {
+		t.Fatalf("findEnvValue() = %q, want account-value", got)
+	}
+}
+
+func TestResolveEnvRunEntriesAutoFallsBackToGlobal(t *testing.T) {
+	repo := t.TempDir()
+	store := envstore.NewStore(repo)
+	if _, err := store.Set(envstore.ScopeGlobal, "", "OPENAI_BASE_URL", "https://global.example/v1", "test"); err != nil {
+		t.Fatalf("store.Set(global) error = %v", err)
+	}
+
+	entries, err := resolveEnvRunEntries(store, envstore.ScopeAuto, "assistant", "OPENAI_BASE_URL")
+	if err != nil {
+		t.Fatalf("resolveEnvRunEntries() error = %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Scope != envstore.ScopeGlobal || entries[0].Value != "https://global.example/v1" {
+		t.Fatalf("entries[0] = %#v, want global fallback", entries[0])
+	}
+}
+
+func findEnvValue(env []string, key string) string {
+	prefix := key + "="
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			return strings.TrimPrefix(item, prefix)
+		}
+	}
+	return ""
 }
 
 func TestResolveLaunchAgentAccountsStatusIncludesDisabledBots(t *testing.T) {

@@ -487,6 +487,7 @@ func handleMessageEvent(ctx context.Context, client *lark.Client, cfg Config, en
 		for _, command := range []*adminCommand{
 			parseSyncCommand(userText),
 			parseMemoryCommand(userText),
+			parseEnvCommand(userText),
 			parseTimerCommand(userText),
 		} {
 			handled, reply, err := handleAdminCommand(ctx, cfg, chatID, command)

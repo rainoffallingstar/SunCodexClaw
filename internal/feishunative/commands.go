@@ -14,6 +14,9 @@ import (
 type adminCommand struct {
 	Kind     string
 	Action   string
+	Scope    string
+	Key      string
+	Value    string
 	Target   string
 	Query    string
 	Text     string
@@ -130,6 +133,54 @@ func parseSyncCommand(text string) *adminCommand {
 	return &adminCommand{Kind: "sync", Action: "help"}
 }
 
+func parseEnvCommand(text string) *adminCommand {
+	raw := normalizeCommandText(text)
+	if raw == "" {
+		return nil
+	}
+	if regexp.MustCompile(`^/envs$`).MatchString(raw) {
+		return &adminCommand{Kind: "env", Action: "list", Scope: "all"}
+	}
+	if !regexp.MustCompile(`^/env(?:\s|$)`).MatchString(raw) {
+		return nil
+	}
+	switch {
+	case regexp.MustCompile(`^/env(?:\s+help)?$`).MatchString(raw):
+		return &adminCommand{Kind: "env", Action: "help"}
+	case regexp.MustCompile(`^/env\s+list$`).MatchString(raw):
+		return &adminCommand{Kind: "env", Action: "list", Scope: "all"}
+	}
+	if match := regexp.MustCompile(`^/env\s+list\s+(global|account|all)$`).FindStringSubmatch(raw); len(match) == 2 {
+		return &adminCommand{Kind: "env", Action: "list", Scope: strings.ToLower(strings.TrimSpace(match[1]))}
+	}
+	if match := regexp.MustCompile(`^/env\s+get(?:\s+(global|account))?\s+([A-Za-z_][A-Za-z0-9_]*)$`).FindStringSubmatch(raw); len(match) == 3 {
+		return &adminCommand{
+			Kind:   "env",
+			Action: "get",
+			Scope:  emptyFallback(strings.ToLower(strings.TrimSpace(match[1])), "account"),
+			Key:    strings.TrimSpace(match[2]),
+		}
+	}
+	if match := regexp.MustCompile(`^/env\s+set(?:\s+(global|account))?\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.+)$`).FindStringSubmatch(raw); len(match) == 4 {
+		return &adminCommand{
+			Kind:   "env",
+			Action: "set",
+			Scope:  emptyFallback(strings.ToLower(strings.TrimSpace(match[1])), "account"),
+			Key:    strings.TrimSpace(match[2]),
+			Value:  strings.TrimSpace(match[3]),
+		}
+	}
+	if match := regexp.MustCompile(`^/env\s+(?:delete|remove)(?:\s+(global|account))?\s+([A-Za-z_][A-Za-z0-9_]*)$`).FindStringSubmatch(raw); len(match) == 3 {
+		return &adminCommand{
+			Kind:   "env",
+			Action: "delete",
+			Scope:  emptyFallback(strings.ToLower(strings.TrimSpace(match[1])), "account"),
+			Key:    strings.TrimSpace(match[2]),
+		}
+	}
+	return &adminCommand{Kind: "env", Action: "help"}
+}
+
 func normalizeCommandText(text string) string {
 	return strings.TrimSpace(strings.ReplaceAll(text, "\u00a0", " "))
 }
@@ -144,6 +195,9 @@ func handleAdminCommand(ctx context.Context, cfg Config, chatID string, command 
 		return true, reply, err
 	case "memory":
 		reply, err := handleMemoryCommand(ctx, cfg, chatID, command)
+		return true, reply, err
+	case "env":
+		reply, err := handleEnvCommand(ctx, cfg, chatID, command)
 		return true, reply, err
 	case "sync":
 		reply, err := handleSyncCommand(ctx, cfg, command)
@@ -239,6 +293,66 @@ func handleSyncCommand(ctx context.Context, cfg Config, command *adminCommand) (
 		return "", nil
 	}
 	return runAdminCommand(ctx, cfg.RepoRoot, 60*time.Second, args...)
+}
+
+func handleEnvCommand(ctx context.Context, cfg Config, chatID string, command *adminCommand) (string, error) {
+	if command == nil {
+		return "", nil
+	}
+	account, err := requireAdminCommandAccount(cfg)
+	if err != nil {
+		return "", err
+	}
+	scope := strings.TrimSpace(command.Scope)
+	if scope == "" {
+		scope = "account"
+	}
+	switch command.Action {
+	case "help":
+		return formatEnvHelp(), nil
+	case "list":
+		args := []string{"env", "list", "--scope", emptyFallback(scope, "all")}
+		if scope != "global" {
+			args = append(args, "--account", account)
+		}
+		return runAdminCommand(ctx, cfg.RepoRoot, 30*time.Second, args...)
+	case "get":
+		if strings.TrimSpace(command.Key) == "" {
+			return "缺少环境变量 key。请用 /env help 查看命令格式。", nil
+		}
+		args := []string{"env", "get", "--scope", scope}
+		if scope != "global" {
+			args = append(args, "--account", account)
+		}
+		args = append(args, command.Key)
+		return runAdminCommand(ctx, cfg.RepoRoot, 30*time.Second, args...)
+	case "set":
+		if strings.TrimSpace(command.Key) == "" || command.Value == "" {
+			return "缺少环境变量 key 或 value。请用 /env help 查看命令格式。", nil
+		}
+		args := []string{"env", "set", "--scope", scope}
+		if scope != "global" {
+			args = append(args, "--account", account)
+		}
+		sourceParts := []string{"feishu", account}
+		if strings.TrimSpace(chatID) != "" {
+			sourceParts = append(sourceParts, chatID)
+		}
+		args = append(args, "--key", command.Key, "--value", command.Value, "--updated-by", strings.Join(sourceParts, "/"))
+		return runAdminCommand(ctx, cfg.RepoRoot, 30*time.Second, args...)
+	case "delete":
+		if strings.TrimSpace(command.Key) == "" {
+			return "缺少环境变量 key。请用 /env help 查看命令格式。", nil
+		}
+		args := []string{"env", "delete", "--scope", scope}
+		if scope != "global" {
+			args = append(args, "--account", account)
+		}
+		args = append(args, command.Key)
+		return runAdminCommand(ctx, cfg.RepoRoot, 30*time.Second, args...)
+	default:
+		return formatEnvHelp(), nil
+	}
 }
 
 func buildSyncAdminArgs(command *adminCommand, account string) []string {
@@ -393,5 +507,26 @@ func formatSyncHelp() string {
 		"/sync pull 会把远端文档拉到本地恢复目录，不直接覆盖工作区。",
 		"/sync pull 默认落到 .runtime/sync/restore/<account-namespace>/<snapshot>。",
 		"/sync restore 默认只补缺失文档；显式覆盖时才会使用 force 模式。",
+	}, "\n")
+}
+
+func formatEnvHelp() string {
+	return strings.Join([]string{
+		"环境变量库命令：",
+		"/env help",
+		"/env list",
+		"/env list global",
+		"/env list account",
+		"/env get <KEY>",
+		"/env get global <KEY>",
+		"/env set <KEY> <VALUE>",
+		"/env set global <KEY> <VALUE>",
+		"/env delete <KEY>",
+		"/env delete global <KEY>",
+		"",
+		"说明：",
+		"/env 默认操作当前机器人账号自己的账号作用域。",
+		"/env list 默认会同时显示当前账号作用域和 global 作用域。",
+		"/env get / list / set 的返回值默认都是脱敏的，不会直接回显明文。",
 	}, "\n")
 }

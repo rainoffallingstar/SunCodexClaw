@@ -22,6 +22,7 @@ import (
 	"suncodexclaw/internal/codexenv"
 	"suncodexclaw/internal/codexhome"
 	"suncodexclaw/internal/configstore"
+	"suncodexclaw/internal/envstore"
 	"suncodexclaw/internal/feishunative"
 	"suncodexclaw/internal/memory"
 	"suncodexclaw/internal/supervisor"
@@ -59,6 +60,8 @@ func main() {
 		timerCmd(os.Args[2:])
 	case "memory":
 		memoryCmd(os.Args[2:])
+	case "env":
+		envCmd(os.Args[2:])
 	case "sync":
 		syncCmd(os.Args[2:])
 	case "update":
@@ -90,6 +93,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  suncodexclawd preflight --docker-compose [--account a] [--account b] [--repo .]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd timer <start|list|show|upsert|update|logs|run|enable|disable|delete>")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd memory <add|list|show|search|delete>")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd env <set|get|list|delete|run>")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd sync <status|list-remote|push|pull|restore>")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd update [--repo owner/repo] [--version vX.Y.Z] [--bin /path/to/suncodexclawd] [--check] [--dry-run]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd update --docker-compose [--project-dir .]")
@@ -101,7 +105,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "Notes:")
 	fmt.Fprintln(os.Stderr, "  - Default account selection depends on subcommand: start/preflight use enabled bots; status/stop use all configured bots; restart stops all configured bots then starts enabled bots.")
 	fmt.Fprintln(os.Stderr, "  - Local mode is the default; passing --local is optional and only makes the mode explicit.")
-	fmt.Fprintln(os.Stderr, "  - In a bot workspace, timer/memory/sync can infer --account from .config.toml.")
+	fmt.Fprintln(os.Stderr, "  - In a bot workspace, timer/memory/env/sync can infer --account from .config.toml.")
 }
 
 type multiFlag []string
@@ -1218,6 +1222,40 @@ func memoryCmd(args []string) {
 	}
 }
 
+func envCmd(args []string) {
+	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
+		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
+		if err := runDockerComposeServiceCommand(repo, "env", composeArgs...); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	} else {
+		args = composeArgs
+	}
+	if len(args) == 0 {
+		envUsage()
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "set":
+		envSet(args[1:])
+	case "get":
+		envGet(args[1:])
+	case "list":
+		envList(args[1:])
+	case "delete":
+		envDelete(args[1:])
+	case "run":
+		envRun(args[1:])
+	case "help", "--help", "-h":
+		envUsage()
+	default:
+		envUsage()
+		os.Exit(2)
+	}
+}
+
 func syncCmd(args []string) {
 	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
 		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
@@ -1339,6 +1377,19 @@ func memoryUsage() {
 	fmt.Fprintln(os.Stderr, "Notes:")
 	fmt.Fprintln(os.Stderr, "  - In a bot workspace, memory commands can infer --account from .config.toml.")
 	fmt.Fprintln(os.Stderr, "  - Outside a bot workspace, pass --account <account> explicitly.")
+}
+
+func envUsage() {
+	fmt.Fprintln(os.Stderr, "Env Usage:")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd env set [--docker-compose] [--repo .] [--scope global|account] [--account <account>] --key <KEY> (--value <VALUE> | --value-file <PATH>) [--updated-by <source>]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd env get [--docker-compose] [--repo .] [--scope auto|global|account] [--account <account>] [--raw] <KEY>")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd env list [--docker-compose] [--repo .] [--scope global|account|all] [--account <account>]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd env delete [--docker-compose] [--repo .] [--scope global|account] [--account <account>] <KEY>")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd env run [--docker-compose] [--repo .] [--scope auto|global|account] [--account <account>] --key <KEY> [--key <KEY> ...] -- <command> [args...]")
+	fmt.Fprintln(os.Stderr, "Notes:")
+	fmt.Fprintln(os.Stderr, "  - env get/list/set default to masked output; use env get --raw only when you really need the plaintext.")
+	fmt.Fprintln(os.Stderr, "  - Prefer env run when you need to pass stored secrets to another command without printing them.")
+	fmt.Fprintln(os.Stderr, "  - In a bot workspace, account-scoped env commands can infer --account from .config.toml.")
 }
 
 func syncUsage() {
@@ -2061,6 +2112,196 @@ func memoryDelete(args []string) {
 	fmt.Printf("deleted=%s\n", fs.Arg(0))
 }
 
+func envSet(args []string) {
+	fs := flag.NewFlagSet("env set", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	scope := fs.String("scope", envstore.ScopeAccount, "env scope: global|account")
+	account := fs.String("account", "", "robot account name for account scope")
+	key := fs.String("key", "", "env key name")
+	value := fs.String("value", "", "env value")
+	valueFile := fs.String("value-file", "", "path to file containing env value")
+	updatedBy := fs.String("updated-by", "", "audit source label")
+	_ = fs.Parse(args)
+
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedScope, resolvedAccount, err := resolveEnvScopeAndAccount(strings.TrimSpace(*scope), strings.TrimSpace(*account), true)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	valueText := *value
+	if strings.TrimSpace(*valueFile) != "" {
+		body, err := os.ReadFile(strings.TrimSpace(*valueFile))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		valueText = string(body)
+	}
+	if strings.TrimSpace(*key) == "" {
+		fmt.Fprintln(os.Stderr, "error: --key is required")
+		os.Exit(2)
+	}
+	store := envstore.NewStore(repo)
+	entry, err := store.Set(resolvedScope, resolvedAccount, strings.TrimSpace(*key), valueText, strings.TrimSpace(*updatedBy))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("scope=%s account=%s key=%s value=%s updated_at=%s\n",
+		entry.Scope,
+		emptyFallback(entry.Account, "(none)"),
+		entry.Key,
+		envstore.MaskedValue(entry.Value),
+		emptyFallback(entry.UpdatedAt, "(none)"),
+	)
+}
+
+func envGet(args []string) {
+	args = reorderFlagsBeforePositionals(args, nil)
+	fs := flag.NewFlagSet("env get", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	scope := fs.String("scope", envstore.ScopeAuto, "env scope: auto|global|account")
+	account := fs.String("account", "", "robot account name for account/auto scope")
+	raw := fs.Bool("raw", false, "print plaintext value")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		envUsage()
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedScope, resolvedAccount, err := resolveEnvScopeAndAccount(strings.TrimSpace(*scope), strings.TrimSpace(*account), false)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	store := envstore.NewStore(repo)
+	entry, err := getEnvEntry(store, resolvedScope, resolvedAccount, fs.Arg(0))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if *raw {
+		fmt.Print(entry.Value)
+		return
+	}
+	fmt.Printf("scope=%s account=%s key=%s value=%s updated_at=%s\n",
+		entry.Scope,
+		emptyFallback(entry.Account, "(none)"),
+		entry.Key,
+		envstore.MaskedValue(entry.Value),
+		emptyFallback(entry.UpdatedAt, "(none)"),
+	)
+}
+
+func envList(args []string) {
+	fs := flag.NewFlagSet("env list", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	scope := fs.String("scope", envstore.ScopeAll, "env scope: global|account|all")
+	account := fs.String("account", "", "robot account name for account/all scope")
+	_ = fs.Parse(args)
+
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedScope, resolvedAccount, err := resolveEnvScopeAndAccount(strings.TrimSpace(*scope), strings.TrimSpace(*account), false)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	store := envstore.NewStore(repo)
+	entries, err := store.List(resolvedScope, resolvedAccount)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if len(entries) == 0 {
+		fmt.Println("(no env entries)")
+		return
+	}
+	for _, entry := range entries {
+		fmt.Printf("scope=%s account=%s key=%s value=%s updated_at=%s\n",
+			entry.Scope,
+			emptyFallback(entry.Account, "(none)"),
+			entry.Key,
+			envstore.MaskedValue(entry.Value),
+			emptyFallback(entry.UpdatedAt, "(none)"),
+		)
+	}
+}
+
+func envDelete(args []string) {
+	args = reorderFlagsBeforePositionals(args, nil)
+	fs := flag.NewFlagSet("env delete", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	scope := fs.String("scope", envstore.ScopeAccount, "env scope: global|account")
+	account := fs.String("account", "", "robot account name for account scope")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		envUsage()
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedScope, resolvedAccount, err := resolveEnvScopeAndAccount(strings.TrimSpace(*scope), strings.TrimSpace(*account), true)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	store := envstore.NewStore(repo)
+	if err := store.Delete(resolvedScope, resolvedAccount, fs.Arg(0)); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("deleted=true scope=%s account=%s key=%s\n", resolvedScope, emptyFallback(resolvedAccount, "(none)"), fs.Arg(0))
+}
+
+func envRun(args []string) {
+	fs := flag.NewFlagSet("env run", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	scope := fs.String("scope", envstore.ScopeAuto, "env scope: auto|global|account")
+	account := fs.String("account", "", "robot account name for account/auto scope")
+	var keys multiFlag
+	fs.Var(&keys, "key", "env key to inject as same-named process env (repeatable)")
+	_ = fs.Parse(args)
+	if len(keys) == 0 {
+		fmt.Fprintln(os.Stderr, "error: at least one --key is required")
+		os.Exit(2)
+	}
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "error: missing command after env run")
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedScope, resolvedAccount, err := resolveEnvScopeAndAccount(strings.TrimSpace(*scope), strings.TrimSpace(*account), false)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	store := envstore.NewStore(repo)
+	childEnv := os.Environ()
+	for _, key := range keys {
+		entries, err := resolveEnvRunEntries(store, resolvedScope, resolvedAccount, key)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		for _, entry := range entries {
+			childEnv = appendEnvOverride(childEnv, entry.Key, entry.Value)
+		}
+	}
+	cmd := exec.Command(fs.Arg(0), fs.Args()[1:]...)
+	cmd.Env = childEnv
+	cmd.Dir = repo
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
 func syncStatusCmd(args []string) {
 	fs := flag.NewFlagSet("sync status", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
@@ -2506,6 +2747,152 @@ func resolveScopedAccount(explicit string, scope string) (string, error) {
 
 func resolveMemoryAccount(explicit string) (string, error) {
 	return resolveScopedAccount(explicit, "memory")
+}
+
+func tryResolveScopedAccount(explicit string, scope string) (string, error) {
+	explicit = strings.TrimSpace(explicit)
+	if explicit != "" {
+		return explicit, nil
+	}
+	cwd, err := os.Getwd()
+	if err == nil {
+		account, cfgPath, cfgErr := configstore.ResolveRuntimeAccountFromDir(cwd, scope)
+		if cfgErr != nil {
+			return "", fmt.Errorf("failed to read runtime account from %s: %w", cfgPath, cfgErr)
+		}
+		if strings.TrimSpace(account) != "" {
+			return account, nil
+		}
+	}
+	return "", nil
+}
+
+func resolveEnvScopeAndAccount(scope string, explicitAccount string, requireAccountForScoped bool) (string, string, error) {
+	scope = strings.TrimSpace(strings.ToLower(scope))
+	if scope == "" {
+		scope = envstore.ScopeAuto
+	}
+	switch scope {
+	case envstore.ScopeGlobal:
+		return envstore.ScopeGlobal, "", nil
+	case envstore.ScopeAccount:
+		account, err := tryResolveScopedAccount(explicitAccount, "env")
+		if err != nil {
+			return "", "", err
+		}
+		if strings.TrimSpace(account) == "" && requireAccountForScoped {
+			return "", "", fmt.Errorf("--account <account> is required for account-scoped env commands; run the command inside a bot workspace with .config.toml or pass --account explicitly")
+		}
+		return envstore.ScopeAccount, strings.TrimSpace(account), nil
+	case envstore.ScopeAll:
+		account, err := tryResolveScopedAccount(explicitAccount, "env")
+		if err != nil {
+			return "", "", err
+		}
+		return envstore.ScopeAll, strings.TrimSpace(account), nil
+	case envstore.ScopeAuto:
+		account, err := tryResolveScopedAccount(explicitAccount, "env")
+		if err != nil {
+			return "", "", err
+		}
+		return envstore.ScopeAuto, strings.TrimSpace(account), nil
+	default:
+		return "", "", fmt.Errorf("invalid --scope %q, expected auto|global|account|all", scope)
+	}
+}
+
+func getEnvEntry(store *envstore.Store, scope, account, key string) (envstore.Entry, error) {
+	switch strings.TrimSpace(scope) {
+	case envstore.ScopeGlobal:
+		return store.Get(envstore.ScopeGlobal, "", key)
+	case envstore.ScopeAccount:
+		if strings.TrimSpace(account) == "" {
+			return envstore.Entry{}, fmt.Errorf("account scope requires account")
+		}
+		return store.Get(envstore.ScopeAccount, account, key)
+	case envstore.ScopeAuto:
+		return store.Resolve(account, key)
+	default:
+		return envstore.Entry{}, fmt.Errorf("invalid env scope %q", scope)
+	}
+}
+
+func resolveEnvRunEntries(store *envstore.Store, scope, account, key string) ([]envstore.Entry, error) {
+	switch strings.TrimSpace(scope) {
+	case envstore.ScopeGlobal:
+		entry, err := store.Get(envstore.ScopeGlobal, "", key)
+		if err != nil {
+			return nil, err
+		}
+		return []envstore.Entry{entry}, nil
+	case envstore.ScopeAccount:
+		if strings.TrimSpace(account) == "" {
+			return nil, fmt.Errorf("account scope requires account")
+		}
+		entry, err := store.Get(envstore.ScopeAccount, account, key)
+		if err != nil {
+			return nil, err
+		}
+		return []envstore.Entry{entry}, nil
+	case envstore.ScopeAuto:
+		return resolveAutoEnvRunEntries(store, account, key)
+	default:
+		return nil, fmt.Errorf("invalid env scope %q", scope)
+	}
+}
+
+func resolveAutoEnvRunEntries(store *envstore.Store, account, key string) ([]envstore.Entry, error) {
+	account = strings.TrimSpace(account)
+	entries := []envstore.Entry{}
+	var accountErr error
+	if account != "" {
+		globalEntry, err := store.Get(envstore.ScopeGlobal, "", key)
+		if err == nil {
+			entries = append(entries, globalEntry)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		accountEntry, err := store.Get(envstore.ScopeAccount, account, key)
+		if err == nil {
+			entries = append(entries, accountEntry)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		} else {
+			accountErr = err
+		}
+		if len(entries) > 0 {
+			return entries, nil
+		}
+		if accountErr != nil {
+			return nil, accountErr
+		}
+		return nil, os.ErrNotExist
+	}
+	entry, err := store.Get(envstore.ScopeGlobal, "", key)
+	if err != nil {
+		return nil, err
+	}
+	return []envstore.Entry{entry}, nil
+}
+
+func appendEnvOverride(env []string, key, value string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env)+1)
+	replaced := false
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			if !replaced {
+				out = append(out, prefix+value)
+				replaced = true
+			}
+			continue
+		}
+		out = append(out, item)
+	}
+	if !replaced {
+		out = append(out, prefix+value)
+	}
+	return out
 }
 
 func defaultSyncPullTarget(account string, snapshot string) string {

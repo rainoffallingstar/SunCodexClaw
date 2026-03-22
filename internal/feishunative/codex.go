@@ -82,6 +82,14 @@ var defaultSyncSystemGuide = strings.Join([]string{
 	"如果当前命令运行在机器人工作目录里，`sync` 可直接从 `.config.toml` 推断当前账号；不在工作目录里时再显式补 `--account <当前机器人账号>`。",
 }, "\n")
 
+var defaultEnvSystemGuide = strings.Join([]string{
+	"环境变量库：如果用户需要为当前机器人保存 token、key、endpoint、cookie 或其他敏感配置，优先使用 `suncodexclawd env ...`，不要把敏感值写进普通回复、memory、timer prompt 或工作区文档。",
+	"默认优先使用账号作用域：`suncodexclawd env set --account <当前机器人账号> --key NAME --value '...'`；只有明确要求跨机器人共用时才使用 `--scope global`。",
+	"读取时优先用 `suncodexclawd env get --account <当前机器人账号> NAME`；该命令默认脱敏，不会打印明文。",
+	"如果你需要把密钥传给其他命令，优先使用 `suncodexclawd env run --account <当前机器人账号> --key NAME -- <command> ...`，避免明文出现在终端输出里。",
+	"只有在 absolutely necessary 且后续不会回显的情况下，才使用 `suncodexclawd env get --raw ...`；拿到后不要在回复里复述这个值。",
+}, "\n")
+
 func RunCodex(ctx context.Context, cfg CodexConfig, request CodexRunRequest) (CodexReply, error) {
 	prompt := strings.TrimSpace(request.Prompt)
 	fallbackPrompt := strings.TrimSpace(request.FallbackPrompt)
@@ -343,6 +351,8 @@ func buildPrompt(cfg Config, chatID, userText, title string, history []historyEn
 		"",
 		defaultSyncSystemGuide,
 		"",
+		defaultEnvSystemGuide,
+		"",
 		"当前机器人账号："+cfg.AccountName,
 		"当前聊天 chat_id："+emptyFallback(chatID, "(unknown)"),
 		"当前工作目录："+emptyFallback(cfg.Codex.Cwd, emptyFallback(cfg.RepoRoot, ".")),
@@ -387,6 +397,8 @@ func buildResumePrompt(cfg Config, chatID, userText string, imageCount int) stri
 		defaultMemorySystemGuide,
 		"",
 		defaultSyncSystemGuide,
+		"",
+		defaultEnvSystemGuide,
 		"",
 		"当前机器人账号：" + cfg.AccountName,
 		"当前聊天 chat_id：" + emptyFallback(chatID, "(unknown)"),

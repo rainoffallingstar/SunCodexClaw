@@ -288,15 +288,20 @@ func TestParseAdminCommands(t *testing.T) {
 		text   string
 		kind   string
 		action string
+		scope  string
+		key    string
+		value  string
 		target string
 		query  string
 	}{
-		{"timer list", "/timer list", "timer", "list", "", ""},
-		{"timer alias", "/timers", "timer", "list", "", ""},
-		{"timer show", "/timer show daily-report", "timer", "show", "daily-report", ""},
-		{"memory add", "/memory 以后默认用中文回复", "memory", "add", "", ""},
-		{"memory search", "/memory search 中文", "memory", "search", "", "中文"},
-		{"sync pull", "/sync pull latest", "sync", "pull", "", ""},
+		{"timer list", "/timer list", "timer", "list", "", "", "", "", ""},
+		{"timer alias", "/timers", "timer", "list", "", "", "", "", ""},
+		{"timer show", "/timer show daily-report", "timer", "show", "", "", "", "daily-report", ""},
+		{"memory add", "/memory 以后默认用中文回复", "memory", "add", "", "", "", "", ""},
+		{"memory search", "/memory search 中文", "memory", "search", "", "", "", "", "中文"},
+		{"sync pull", "/sync pull latest", "sync", "pull", "", "", "", "", ""},
+		{"env set", "/env set OPENAI_API_KEY sk-test", "env", "set", "account", "OPENAI_API_KEY", "sk-test", "", ""},
+		{"env get global", "/env get global SHARED_KEY", "env", "get", "global", "SHARED_KEY", "", "", ""},
 	}
 
 	for _, tt := range tests {
@@ -307,6 +312,8 @@ func TestParseAdminCommands(t *testing.T) {
 				cmd = parseTimerCommand(tt.text)
 			case "memory":
 				cmd = parseMemoryCommand(tt.text)
+			case "env":
+				cmd = parseEnvCommand(tt.text)
 			case "sync":
 				cmd = parseSyncCommand(tt.text)
 			}
@@ -321,6 +328,15 @@ func TestParseAdminCommands(t *testing.T) {
 			}
 			if tt.query != "" && cmd.Query != tt.query {
 				t.Fatalf("query=%q want %q", cmd.Query, tt.query)
+			}
+			if tt.scope != "" && cmd.Scope != tt.scope {
+				t.Fatalf("scope=%q want %q", cmd.Scope, tt.scope)
+			}
+			if tt.key != "" && cmd.Key != tt.key {
+				t.Fatalf("key=%q want %q", cmd.Key, tt.key)
+			}
+			if tt.value != "" && cmd.Value != tt.value {
+				t.Fatalf("value=%q want %q", cmd.Value, tt.value)
 			}
 		})
 	}
