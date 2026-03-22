@@ -158,7 +158,7 @@ func renderDefaultRuntimeDocs(account string) map[string]string {
 			"## 已暴露技能",
 			"",
 			"- 服务管理：使用 `suncodexclawd status|start|stop|restart|logs|list` 查看和管理机器人账号运行状态；其中 `list` 会显示各账号的 enabled/disabled 状态",
-			"- 记忆系统：使用 `suncodexclawd memory add|list|show|search|delete --account " + resolved + "` 管理当前机器人独立的长期记忆库；如果当前就在本目录，也可以省略 `--account`",
+			"- 记忆系统：使用 `suncodexclawd memory add|stats|list|show|search|recall|review|related|duplicates|dedupe|update|pin|unpin|archive|unarchive|purge|merge|delete --account " + resolved + "` 管理当前机器人独立的长期记忆库；重要规则可用 `pin` 或 `update --priority/--kind` 主动提高召回权重，可先用 `stats` 看总览、用 `recall` 预览自动召回效果，再用 `review` 做治理体检，确认规则稳定后也可用 `review --apply-promote|--apply-stale|--apply-all` 批量执行；低价值旧记忆优先 `archive`，长期归档后再用 `purge` 预览或清理，历史重复条目再用 `duplicates`、`merge` 或 `dedupe --apply` 收敛；如果当前就在本目录，也可以省略 `--account`",
 			"- 环境变量库：使用 `suncodexclawd env set|get|list|delete|run` 管理敏感配置；在本目录执行账号作用域命令时可直接依赖 `.config.toml` 推断当前账号，传递密钥给其他命令时优先使用 `env run`",
 			"- 定时任务：使用 `suncodexclawd timer list|show|upsert|update|run|logs|enable|disable|delete` 管理计划任务；在本目录可省略 `--account`",
 			"- 技能检索：使用 `suncodexclawd clawhub search|list|show|file` 从 ClawHub 检索公开技能；通常先 `search` 找候选，再用 `show` 或 `file --path SKILL.md` 阅读详情",

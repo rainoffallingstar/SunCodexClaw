@@ -14,6 +14,8 @@ import (
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
+
+	"suncodexclaw/internal/memory"
 )
 
 type progressSpy struct {
@@ -262,7 +264,7 @@ func TestEnsureRuntimeWorkspaceWithOptionsOverwritesDocsWithoutRestore(t *testin
 	if err != nil {
 		t.Fatalf("ReadFile(agent.md) error = %v", err)
 	}
-	if strings.Contains(string(agentBody), "stale") {
+	if strings.TrimSpace(string(agentBody)) == "stale" {
 		t.Fatalf("agent.md was not overwritten:\n%s", string(agentBody))
 	}
 	if !strings.Contains(string(agentBody), "SunCodexClaw workspace agent") {
@@ -350,16 +352,57 @@ func TestParseAdminCommands(t *testing.T) {
 		target string
 		query  string
 	}{
+		{"timer help", "/timer help", "timer", "help", "", "", "", "", ""},
 		{"timer list", "/timer list", "timer", "list", "", "", "", "", ""},
 		{"timer alias", "/timers", "timer", "list", "", "", "", "", ""},
 		{"timer show", "/timer show daily-report", "timer", "show", "", "", "", "daily-report", ""},
 		{"memory add", "/memory 以后默认用中文回复", "memory", "add", "", "", "", "", ""},
+		{"memory add force-new", "/memory add --force-new 以后默认用中文回复", "memory", "add", "", "", "", "", ""},
+		{"memory force alias", "/memory force 以后默认用中文回复", "memory", "add", "", "", "", "", ""},
+		{"memory help", "/memory help", "memory", "help", "", "", "", "", ""},
+		{"memory stats", "/memory stats", "memory", "stats", "", "", "", "", ""},
+		{"memory stats limit", "/memory stats 10", "memory", "stats", "", "", "", "", ""},
+		{"memory recall", "/memory recall 中文回复", "memory", "recall", "", "", "", "", "中文回复"},
+		{"memory recall archived", "/memory recall archived 中文回复", "memory", "recall", "archived", "", "", "", "中文回复"},
+		{"memory recall all", "/memory recall all 中文回复", "memory", "recall", "all", "", "", "", "中文回复"},
+		{"memory review", "/memory review", "memory", "review", "", "", "", "", ""},
+		{"memory review min-score", "/memory review 130", "memory", "review", "", "", "", "", ""},
+		{"memory purge", "/memory purge", "memory", "purge", "", "", "", "", ""},
+		{"memory purge days", "/memory purge 45", "memory", "purge", "", "", "", "", ""},
+		{"memory purge apply", "/memory purge apply 45", "memory", "purge", "", "", "", "", ""},
+		{"memory review apply", "/memory review apply", "memory", "review", "all", "", "", "", ""},
+		{"memory review apply stale", "/memory review apply stale 130", "memory", "review", "stale", "", "", "", ""},
+		{"memory review apply promote", "/memory review apply promote", "memory", "review", "promote", "", "", "", ""},
+		{"memory list archived", "/memory list archived", "memory", "list", "archived", "", "", "", ""},
+		{"memory list all", "/memory list all", "memory", "list", "all", "", "", "", ""},
+		{"memory related", "/memory related mem-001", "memory", "related", "", "", "", "mem-001", ""},
+		{"memory related min-score", "/memory related mem-001 130", "memory", "related", "", "", "", "mem-001", ""},
+		{"memory duplicates", "/memory duplicates", "memory", "duplicates", "", "", "", "", ""},
+		{"memory duplicates min-score", "/memory duplicates 130", "memory", "duplicates", "", "", "", "", ""},
+		{"memory dedupe", "/memory dedupe", "memory", "dedupe", "", "", "", "", ""},
+		{"memory dedupe apply", "/memory dedupe apply", "memory", "dedupe", "", "", "", "", ""},
+		{"memory dedupe apply min-score", "/memory dedupe apply 130", "memory", "dedupe", "", "", "", "", ""},
 		{"memory search", "/memory search 中文", "memory", "search", "", "", "", "", "中文"},
+		{"memory search archived", "/memory search archived 中文", "memory", "search", "archived", "", "", "", "中文"},
+		{"memory search all", "/memory search all 中文", "memory", "search", "all", "", "", "", "中文"},
+		{"memory show", "/memory show mem-001", "memory", "show", "", "", "", "mem-001", ""},
+		{"memory archive", "/memory archive mem-001", "memory", "archive", "", "", "", "mem-001", ""},
+		{"memory unarchive", "/memory unarchive mem-001", "memory", "unarchive", "", "", "", "mem-001", ""},
+		{"memory pin", "/memory pin mem-001", "memory", "pin", "", "", "", "mem-001", ""},
+		{"memory unpin", "/memory unpin mem-001", "memory", "unpin", "", "", "", "mem-001", ""},
+		{"memory merge", "/memory merge mem-001 mem-002 mem-003", "memory", "merge", "", "", "", "mem-001", ""},
+		{"memory update", "/memory update mem-001 以后默认先给结论", "memory", "update", "", "", "", "mem-001", ""},
+		{"memory delete", "/memory delete mem-001", "memory", "delete", "", "", "", "mem-001", ""},
+		{"memory remove alias", "/memory remove mem-001", "memory", "delete", "", "", "", "mem-001", ""},
 		{"sync pull", "/sync pull latest", "sync", "pull", "", "", "", "", ""},
+		{"sync help", "/sync help", "sync", "help", "", "", "", "", ""},
+		{"env help", "/env help", "env", "help", "", "", "", "", ""},
 		{"env set", "/env set OPENAI_API_KEY sk-test", "env", "set", "account", "OPENAI_API_KEY", "sk-test", "", ""},
 		{"env get global", "/env get global SHARED_KEY", "env", "get", "global", "SHARED_KEY", "", "", ""},
+		{"docs help", "/docs help", "workspace-docs", "help", "", "", "", "", ""},
 		{"docs refresh", "/docs refresh", "workspace-docs", "refresh", "", "", "", "", ""},
 		{"workspace docs help", "/workspace-docs", "workspace-docs", "help", "", "", "", "", ""},
+		{"workspace docs explicit help", "/workspace-docs help", "workspace-docs", "help", "", "", "", "", ""},
 	}
 
 	for _, tt := range tests {
@@ -398,8 +441,410 @@ func TestParseAdminCommands(t *testing.T) {
 			if tt.value != "" && cmd.Value != tt.value {
 				t.Fatalf("value=%q want %q", cmd.Value, tt.value)
 			}
+			if tt.kind == "memory" && tt.action == "update" && cmd.Text != "以后默认先给结论" {
+				t.Fatalf("text=%q want %q", cmd.Text, "以后默认先给结论")
+			}
+			if tt.kind == "memory" && tt.action == "add" && strings.Contains(tt.name, "force") && !cmd.Force {
+				t.Fatalf("force=%t want true", cmd.Force)
+			}
+			if tt.kind == "memory" && tt.action == "merge" {
+				if got := strings.Join(cmd.Items, ","); got != "mem-002,mem-003" {
+					t.Fatalf("items=%q want %q", got, "mem-002,mem-003")
+				}
+			}
+			if tt.kind == "memory" && tt.action == "dedupe" && strings.Contains(tt.name, "apply") && !cmd.Apply {
+				t.Fatalf("apply=%t want true", cmd.Apply)
+			}
+			if tt.kind == "memory" && tt.action == "duplicates" && strings.Contains(tt.name, "min-score") && cmd.MinScore != 130 {
+				t.Fatalf("min_score=%d want 130", cmd.MinScore)
+			}
+			if tt.kind == "memory" && tt.action == "related" && strings.Contains(tt.name, "min-score") && cmd.MinScore != 130 {
+				t.Fatalf("min_score=%d want 130", cmd.MinScore)
+			}
+			if tt.kind == "memory" && tt.action == "review" && strings.Contains(tt.name, "min-score") && cmd.MinScore != 130 {
+				t.Fatalf("min_score=%d want 130", cmd.MinScore)
+			}
+			if tt.kind == "memory" && tt.action == "review" && strings.Contains(tt.name, "apply") && !cmd.Apply {
+				t.Fatalf("apply=%t want true", cmd.Apply)
+			}
+			if tt.kind == "memory" && tt.action == "purge" && strings.Contains(tt.name, "apply") && !cmd.Apply {
+				t.Fatalf("apply=%t want true", cmd.Apply)
+			}
+			if tt.kind == "memory" && tt.action == "stats" && strings.Contains(tt.name, "limit") && cmd.Limit != 10 {
+				t.Fatalf("limit=%d want 10", cmd.Limit)
+			}
+			if tt.kind == "memory" && tt.action == "dedupe" && strings.Contains(tt.name, "min-score") && cmd.MinScore != 130 {
+				t.Fatalf("min_score=%d want 130", cmd.MinScore)
+			}
+			if tt.kind == "memory" && tt.action == "purge" && strings.Contains(tt.name, "45") && cmd.MinScore != 45 {
+				t.Fatalf("days=%d want 45", cmd.MinScore)
+			}
 		})
 	}
+}
+
+func TestHandleMemoryCommandForceAliasPassesForceNewToCLI(t *testing.T) {
+	reply, capturedRepo, capturedArgs, err := runHandleMemoryCommandWithCapturedArgs(t, "oc_chat", &adminCommand{
+		Kind:   "memory",
+		Action: "add",
+		Force:  true,
+		Text:   "以后默认用简体中文回复",
+	})
+	if err != nil {
+		t.Fatalf("handleMemoryCommand() error = %v", err)
+	}
+	if reply != "ok" {
+		t.Fatalf("reply = %q, want ok", reply)
+	}
+	if capturedRepo != "/repo" {
+		t.Fatalf("capturedRepo = %q, want /repo", capturedRepo)
+	}
+	got := strings.Join(capturedArgs, " ")
+	for _, want := range []string{
+		"memory add",
+		"--account assistant",
+		"--text 以后默认用简体中文回复",
+		"--source feishu/assistant/oc_chat",
+		"--force-new",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("captured args missing %q: %s", want, got)
+		}
+	}
+}
+
+func TestHandleMemoryCommandReviewApplyPromotePassesCLIFlags(t *testing.T) {
+	reply, capturedRepo, capturedArgs, err := runHandleMemoryCommandWithCapturedArgs(t, "", &adminCommand{
+		Kind:     "memory",
+		Action:   "review",
+		Apply:    true,
+		Scope:    "promote",
+		MinScore: 130,
+	})
+	if err != nil {
+		t.Fatalf("handleMemoryCommand() error = %v", err)
+	}
+	if reply != "ok" {
+		t.Fatalf("reply = %q, want ok", reply)
+	}
+	if capturedRepo != "/repo" {
+		t.Fatalf("capturedRepo = %q, want /repo", capturedRepo)
+	}
+	if got := strings.Join(capturedArgs, " "); got != "memory review --account assistant --min-score 130 --apply-promote" {
+		t.Fatalf("captured args = %q, want review apply promote args", got)
+	}
+}
+
+func TestHandleMemoryCommandShowAndDeletePassCLIArgs(t *testing.T) {
+	tests := []struct {
+		name   string
+		action string
+		want   string
+	}{
+		{name: "show", action: "show", want: "memory show --account assistant mem-001"},
+		{name: "delete", action: "delete", want: "memory delete --account assistant mem-001"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reply, capturedRepo, capturedArgs, err := runHandleMemoryCommandWithCapturedArgs(t, "", &adminCommand{
+				Kind:   "memory",
+				Action: tt.action,
+				Target: "mem-001",
+			})
+			if err != nil {
+				t.Fatalf("handleMemoryCommand() error = %v", err)
+			}
+			if reply != "ok" {
+				t.Fatalf("reply = %q, want ok", reply)
+			}
+			if capturedRepo != "/repo" {
+				t.Fatalf("capturedRepo = %q, want /repo", capturedRepo)
+			}
+			if got := strings.Join(capturedArgs, " "); got != tt.want {
+				t.Fatalf("captured args = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleMemoryCommandHelpReturnsFormattedHelp(t *testing.T) {
+	reply, err := handleMemoryCommand(context.Background(), Config{AccountName: "assistant", RepoRoot: "/repo"}, "", &adminCommand{
+		Kind:   "memory",
+		Action: "help",
+	})
+	if err != nil {
+		t.Fatalf("handleMemoryCommand() error = %v", err)
+	}
+	for _, want := range []string{
+		"记忆命令：",
+		"/memory help",
+		"/memory force",
+		"/memory delete <记忆ID>",
+		"/memory remove <记忆ID>",
+	} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("help missing %q\n%s", want, reply)
+		}
+	}
+}
+
+func TestHandleMemoryCommandShowWithoutTargetReturnsHint(t *testing.T) {
+	reply, err := handleMemoryCommand(context.Background(), Config{AccountName: "assistant", RepoRoot: "/repo"}, "", &adminCommand{
+		Kind:   "memory",
+		Action: "show",
+	})
+	if err != nil {
+		t.Fatalf("handleMemoryCommand() error = %v", err)
+	}
+	if !strings.Contains(reply, "缺少记忆 ID") || !strings.Contains(reply, "/memory help") {
+		t.Fatalf("reply = %q, want missing id hint", reply)
+	}
+}
+
+func TestHandleMemoryCommandUnknownActionReturnsHelp(t *testing.T) {
+	reply, err := handleMemoryCommand(context.Background(), Config{AccountName: "assistant", RepoRoot: "/repo"}, "", &adminCommand{
+		Kind:   "memory",
+		Action: "wat",
+	})
+	if err != nil {
+		t.Fatalf("handleMemoryCommand() error = %v", err)
+	}
+	for _, want := range []string{
+		"记忆命令：",
+		"/memory help",
+		"/memory remove <记忆ID>",
+	} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("reply missing %q\n%s", want, reply)
+		}
+	}
+}
+
+func TestHandleMemoryCommandNilReturnsEmpty(t *testing.T) {
+	reply, err := handleMemoryCommand(context.Background(), Config{AccountName: "assistant", RepoRoot: "/repo"}, "", nil)
+	if err != nil {
+		t.Fatalf("handleMemoryCommand() error = %v", err)
+	}
+	if reply != "" {
+		t.Fatalf("reply = %q, want empty", reply)
+	}
+}
+
+func TestAdminCommandHandlersNilReturnEmpty(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func() (string, error)
+	}{
+		{
+			name: "timer",
+			run: func() (string, error) {
+				return handleTimerCommand(context.Background(), Config{AccountName: "assistant", RepoRoot: "/repo"}, nil)
+			},
+		},
+		{
+			name: "memory",
+			run: func() (string, error) {
+				return handleMemoryCommand(context.Background(), Config{AccountName: "assistant", RepoRoot: "/repo"}, "", nil)
+			},
+		},
+		{
+			name: "env",
+			run: func() (string, error) {
+				return handleEnvCommand(context.Background(), Config{AccountName: "assistant", RepoRoot: "/repo"}, "", nil)
+			},
+		},
+		{
+			name: "sync",
+			run: func() (string, error) {
+				return handleSyncCommand(context.Background(), Config{AccountName: "assistant", RepoRoot: "/repo"}, nil)
+			},
+		},
+		{
+			name: "workspace-docs",
+			run: func() (string, error) {
+				return handleWorkspaceDocsCommand(context.Background(), Config{AccountName: "assistant", RepoRoot: "/repo"}, nil)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reply, err := tt.run()
+			if err != nil {
+				t.Fatalf("handler error = %v", err)
+			}
+			if reply != "" {
+				t.Fatalf("reply = %q, want empty", reply)
+			}
+		})
+	}
+}
+
+func TestAdminHelpCommandsDoNotRequireAccount(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func() (string, error)
+		want string
+	}{
+		{
+			name: "timer",
+			run: func() (string, error) {
+				return handleTimerCommand(context.Background(), Config{}, &adminCommand{Kind: "timer", Action: "help"})
+			},
+			want: "/timer help",
+		},
+		{
+			name: "memory",
+			run: func() (string, error) {
+				return handleMemoryCommand(context.Background(), Config{}, "", &adminCommand{Kind: "memory", Action: "help"})
+			},
+			want: "/memory help",
+		},
+		{
+			name: "env",
+			run: func() (string, error) {
+				return handleEnvCommand(context.Background(), Config{}, "", &adminCommand{Kind: "env", Action: "help"})
+			},
+			want: "/env help",
+		},
+		{
+			name: "sync",
+			run: func() (string, error) {
+				return handleSyncCommand(context.Background(), Config{}, &adminCommand{Kind: "sync", Action: "help"})
+			},
+			want: "/sync help",
+		},
+		{
+			name: "workspace-docs",
+			run: func() (string, error) {
+				return handleWorkspaceDocsCommand(context.Background(), Config{}, &adminCommand{Kind: "workspace-docs", Action: "help"})
+			},
+			want: "/docs refresh",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reply, err := tt.run()
+			if err != nil {
+				t.Fatalf("help error = %v", err)
+			}
+			if !strings.Contains(reply, tt.want) {
+				t.Fatalf("reply missing %q:\n%s", tt.want, reply)
+			}
+		})
+	}
+}
+
+func TestHandleTimerCommandUnknownActionReturnsHelp(t *testing.T) {
+	reply, err := handleTimerCommand(context.Background(), Config{AccountName: "assistant", RepoRoot: "/repo"}, &adminCommand{
+		Kind:   "timer",
+		Action: "wat",
+	})
+	if err != nil {
+		t.Fatalf("handleTimerCommand() error = %v", err)
+	}
+	for _, want := range []string{
+		"定时任务命令：",
+		"/timer help",
+		"/timer list",
+	} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("reply missing %q\n%s", want, reply)
+		}
+	}
+}
+
+func TestHandleTimerCommandShowWithoutTargetReturnsHint(t *testing.T) {
+	reply, err := handleTimerCommand(context.Background(), Config{AccountName: "assistant", RepoRoot: "/repo"}, &adminCommand{
+		Kind:   "timer",
+		Action: "show",
+	})
+	if err != nil {
+		t.Fatalf("handleTimerCommand() error = %v", err)
+	}
+	if !strings.Contains(reply, "缺少任务 ID") || !strings.Contains(reply, "/timer help") {
+		t.Fatalf("reply = %q, want missing target hint", reply)
+	}
+}
+
+func TestHandleSyncCommandUnknownActionReturnsHelp(t *testing.T) {
+	reply, err := handleSyncCommand(context.Background(), Config{AccountName: "assistant", RepoRoot: "/repo"}, &adminCommand{
+		Kind:   "sync",
+		Action: "wat",
+	})
+	if err != nil {
+		t.Fatalf("handleSyncCommand() error = %v", err)
+	}
+	for _, want := range []string{
+		"同步命令：",
+		"/sync help",
+		"/sync status",
+	} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("reply missing %q\n%s", want, reply)
+		}
+	}
+}
+
+func TestHandleEnvCommandUnknownActionReturnsHelp(t *testing.T) {
+	reply, err := handleEnvCommand(context.Background(), Config{AccountName: "assistant", RepoRoot: "/repo"}, "", &adminCommand{
+		Kind:   "env",
+		Action: "wat",
+	})
+	if err != nil {
+		t.Fatalf("handleEnvCommand() error = %v", err)
+	}
+	for _, want := range []string{
+		"环境变量库命令：",
+		"/env help",
+		"/env list",
+	} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("reply missing %q\n%s", want, reply)
+		}
+	}
+}
+
+func TestHandleWorkspaceDocsCommandUnknownActionReturnsHelp(t *testing.T) {
+	reply, err := handleWorkspaceDocsCommand(context.Background(), Config{AccountName: "assistant", RepoRoot: "/repo"}, &adminCommand{
+		Kind:   "workspace-docs",
+		Action: "wat",
+	})
+	if err != nil {
+		t.Fatalf("handleWorkspaceDocsCommand() error = %v", err)
+	}
+	for _, want := range []string{
+		"工作区文档命令：",
+		"/docs help",
+		"/docs refresh",
+	} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("reply missing %q\n%s", want, reply)
+		}
+	}
+}
+
+func runHandleMemoryCommandWithCapturedArgs(t *testing.T, chatID string, command *adminCommand) (reply string, capturedRepo string, capturedArgs []string, err error) {
+	t.Helper()
+	originalRunner := memoryAdminCommandRunner
+	defer func() {
+		memoryAdminCommandRunner = originalRunner
+	}()
+
+	memoryAdminCommandRunner = func(ctx context.Context, repoRoot string, timeout time.Duration, args ...string) (string, error) {
+		capturedRepo = repoRoot
+		capturedArgs = append([]string{}, args...)
+		return "ok", nil
+	}
+
+	cfg := Config{
+		AccountName: "assistant",
+		RepoRoot:    "/repo",
+	}
+	reply, err = handleMemoryCommand(context.Background(), cfg, chatID, command)
+	return reply, capturedRepo, capturedArgs, err
 }
 
 func TestExtractAttachmentDirectives(t *testing.T) {
@@ -552,11 +997,16 @@ func TestBuildPromptIncludesSystemGuides(t *testing.T) {
 			SystemPrompt: "你是测试助手",
 		},
 	}
-	prompt := buildPrompt(cfg, "oc_chat", "请帮我设置一个定时任务", "测试线程", nil)
+	prompt := buildPrompt(cfg, "oc_chat", "请帮我设置一个定时任务", "测试线程", nil, nil)
 	for _, want := range []string{
 		"定时任务系统：",
 		"记忆系统：",
 		"文档同步系统：",
+		"高置信度重复",
+		"memory force",
+		"/memory force",
+		"/memory help",
+		"/memory remove",
 		"如果 SSH、curl、nc 或其他网络命令失败",
 		"可以输出多行附件指令",
 	} {
@@ -568,7 +1018,7 @@ func TestBuildPromptIncludesSystemGuides(t *testing.T) {
 
 func TestBuildResumePromptIncludesSystemGuides(t *testing.T) {
 	cfg := Config{AccountName: "assistant"}
-	prompt := buildResumePrompt(cfg, "oc_chat", "继续处理", 2)
+	prompt := buildResumePrompt(cfg, "oc_chat", "继续处理", 2, nil)
 	for _, want := range []string{
 		"定时任务系统：",
 		"记忆系统：",
@@ -578,6 +1028,347 @@ func TestBuildResumePromptIncludesSystemGuides(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("resume prompt missing %q\n%s", want, prompt)
 		}
+	}
+}
+
+func TestBuildPromptIncludesRelevantMemories(t *testing.T) {
+	cfg := Config{AccountName: "assistant", RepoRoot: "/repo", Codex: CodexConfig{Cwd: "/repo/workspace/assistant"}}
+	memories := []memory.Entry{
+		{ID: "mem-1", Text: "以后默认用简体中文回复。", Source: "feishu/assistant/oc_chat", Tags: []string{"preference", "language"}, Kind: "preference", Priority: 80, Pinned: true},
+	}
+	prompt := buildPrompt(cfg, "oc_chat", "帮我总结一下", "测试线程", nil, memories)
+	for _, want := range []string{
+		"相关长期记忆：",
+		"mem-1",
+		"以后默认用简体中文回复",
+		"tags=preference,language",
+		"kind=preference",
+		"priority=80",
+		"pinned=true",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q\n%s", want, prompt)
+		}
+	}
+}
+
+func TestLoadRelevantMemoriesFindsMatchingEntries(t *testing.T) {
+	repo := t.TempDir()
+	store := memory.NewLibraryStore(repo, "assistant")
+	if _, err := store.Add("以后默认用简体中文回复。", "feishu/assistant/oc_chat", []string{"language"}); err != nil {
+		t.Fatalf("store.Add() error = %v", err)
+	}
+	if _, err := store.Add("代码修改后默认顺手跑测试。", "feishu/assistant/oc_chat", []string{"workflow"}); err != nil {
+		t.Fatalf("store.Add() error = %v", err)
+	}
+	cfg := Config{RepoRoot: repo, AccountName: "assistant"}
+	entries, err := loadRelevantMemories(cfg, "请用中文回复这个问题")
+	if err != nil {
+		t.Fatalf("loadRelevantMemories() error = %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatalf("loadRelevantMemories() returned no entries")
+	}
+	if !strings.Contains(entries[0].Text, "中文") {
+		t.Fatalf("first memory = %#v, want chinese preference", entries[0])
+	}
+}
+
+func TestLoadRelevantMemoriesPrefersPinnedPriorityAndUseCount(t *testing.T) {
+	repo := t.TempDir()
+	store := memory.NewLibraryStore(repo, "assistant")
+	for _, entry := range []memory.Entry{
+		{
+			ID:         "mem-low",
+			Text:       "中文回复",
+			Priority:   20,
+			UseCount:   1,
+			LastUsedAt: "2026-03-19T00:00:00Z",
+			CreatedAt:  "2026-03-19T00:00:00Z",
+			UpdatedAt:  "2026-03-19T00:00:00Z",
+		},
+		{
+			ID:         "mem-high-used",
+			Text:       "中文回复",
+			Priority:   20,
+			UseCount:   5,
+			LastUsedAt: "2026-03-18T00:00:00Z",
+			CreatedAt:  "2026-03-18T00:00:00Z",
+			UpdatedAt:  "2026-03-18T00:00:00Z",
+		},
+		{
+			ID:        "mem-pinned",
+			Text:      "中文回复",
+			Priority:  10,
+			Pinned:    true,
+			CreatedAt: "2026-03-17T00:00:00Z",
+			UpdatedAt: "2026-03-17T00:00:00Z",
+		},
+	} {
+		if err := store.WriteEntry(entry); err != nil {
+			t.Fatalf("WriteEntry(%s) error = %v", entry.ID, err)
+		}
+	}
+	cfg := Config{RepoRoot: repo, AccountName: "assistant"}
+	entries, err := loadRelevantMemories(cfg, "请用中文回复")
+	if err != nil {
+		t.Fatalf("loadRelevantMemories() error = %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("loadRelevantMemories() len = %d, want 1", len(entries))
+	}
+	if entries[0].ID != "mem-pinned" {
+		t.Fatalf("loadRelevantMemories() order = %#v", entries)
+	}
+}
+
+func TestMarkRelevantMemoriesUsedUpdatesStoredUsage(t *testing.T) {
+	repo := t.TempDir()
+	store := memory.NewLibraryStore(repo, "assistant")
+	entry := memory.Entry{
+		ID:        "mem-used",
+		Text:      "中文回复",
+		CreatedAt: "2026-03-20T00:00:00Z",
+		UpdatedAt: "2026-03-20T00:00:00Z",
+	}
+	if err := store.WriteEntry(entry); err != nil {
+		t.Fatalf("WriteEntry() error = %v", err)
+	}
+	cfg := Config{RepoRoot: repo, AccountName: "assistant"}
+	if err := markRelevantMemoriesUsed(cfg, []memory.Entry{{ID: "mem-used"}}); err != nil {
+		t.Fatalf("markRelevantMemoriesUsed() error = %v", err)
+	}
+	got, err := store.ReadEntry("mem-used")
+	if err != nil {
+		t.Fatalf("ReadEntry() error = %v", err)
+	}
+	if got.UseCount != 1 || got.LastUsedAt == "" {
+		t.Fatalf("stored memory = %#v", got)
+	}
+}
+
+func TestExtractAutoMemoryCandidateDetectsPreference(t *testing.T) {
+	candidate := extractAutoMemoryCandidate("以后默认用简体中文回复")
+	if candidate == nil {
+		t.Fatalf("candidate = nil, want preference memory")
+	}
+	if candidate.Text != "以后默认用简体中文回复" {
+		t.Fatalf("Text = %q", candidate.Text)
+	}
+	if !strings.Contains(strings.Join(candidate.Tags, ","), "preference") {
+		t.Fatalf("Tags = %v, want preference", candidate.Tags)
+	}
+}
+
+func TestExtractAutoMemoryCandidateRejectsSensitiveText(t *testing.T) {
+	candidate := extractAutoMemoryCandidate("记住我的 api key 是 sk-test-123")
+	if candidate != nil {
+		t.Fatalf("candidate = %#v, want nil", candidate)
+	}
+}
+
+func TestMaybeAutoRememberUserMessageDeduplicates(t *testing.T) {
+	repo := t.TempDir()
+	cfg := Config{RepoRoot: repo, AccountName: "assistant"}
+	entry, action, err := maybeAutoRememberUserMessage(cfg, "oc_chat", "以后默认用简体中文回复")
+	if err != nil {
+		t.Fatalf("maybeAutoRememberUserMessage() error = %v", err)
+	}
+	if action != autoMemoryActionAdded {
+		t.Fatalf("first call action = %q, want %q", action, autoMemoryActionAdded)
+	}
+	entry2, action, err := maybeAutoRememberUserMessage(cfg, "oc_chat", "以后默认用简体中文回复")
+	if err != nil {
+		t.Fatalf("second maybeAutoRememberUserMessage() error = %v", err)
+	}
+	if action != autoMemoryActionReinforced {
+		t.Fatalf("second call action = %q, want %q", action, autoMemoryActionReinforced)
+	}
+	if entry2.ID != entry.ID {
+		t.Fatalf("entry2.ID = %q, want %q", entry2.ID, entry.ID)
+	}
+	if entry.Kind != "preference" || entry.Priority != 80 || !entry.Pinned {
+		t.Fatalf("entry metadata = %#v", entry)
+	}
+	if entry2.Priority <= entry.Priority {
+		t.Fatalf("reinforced priority = %d, want > %d", entry2.Priority, entry.Priority)
+	}
+	if entry2.ReinforceCount != 1 || entry2.LastReinforcedAt == "" {
+		t.Fatalf("reinforced metadata = %#v", entry2)
+	}
+}
+
+func TestMaybeAutoRememberUserMessageReinforcesRuleCandidate(t *testing.T) {
+	repo := t.TempDir()
+	cfg := Config{RepoRoot: repo, AccountName: "assistant"}
+	entry, action, err := maybeAutoRememberUserMessage(cfg, "oc_chat", "请始终先给结论再解释")
+	if err != nil {
+		t.Fatalf("first maybeAutoRememberUserMessage() error = %v", err)
+	}
+	if action != autoMemoryActionAdded {
+		t.Fatalf("first action = %q, want %q", action, autoMemoryActionAdded)
+	}
+	reinforced, action, err := maybeAutoRememberUserMessage(cfg, "oc_chat", "请始终先给结论再解释")
+	if err != nil {
+		t.Fatalf("second maybeAutoRememberUserMessage() error = %v", err)
+	}
+	if action != autoMemoryActionReinforced {
+		t.Fatalf("second action = %q, want %q", action, autoMemoryActionReinforced)
+	}
+	if reinforced.ID != entry.ID {
+		t.Fatalf("reinforced.ID = %q, want %q", reinforced.ID, entry.ID)
+	}
+	if reinforced.Priority != entry.Priority+5 {
+		t.Fatalf("reinforced.Priority = %d, want %d", reinforced.Priority, entry.Priority+5)
+	}
+	if reinforced.Kind != "rule" || reinforced.Pinned {
+		t.Fatalf("reinforced metadata = %#v", reinforced)
+	}
+	if reinforced.ReinforceCount != 1 || reinforced.LastReinforcedAt == "" {
+		t.Fatalf("reinforced tracking = %#v", reinforced)
+	}
+}
+
+func TestMaybeAutoRememberUserMessageReinforcesSimilarPreferenceWording(t *testing.T) {
+	repo := t.TempDir()
+	cfg := Config{RepoRoot: repo, AccountName: "assistant"}
+	entry, action, err := maybeAutoRememberUserMessage(cfg, "oc_chat", "以后默认用简体中文回复")
+	if err != nil {
+		t.Fatalf("first maybeAutoRememberUserMessage() error = %v", err)
+	}
+	if action != autoMemoryActionAdded {
+		t.Fatalf("first action = %q, want %q", action, autoMemoryActionAdded)
+	}
+	reinforced, action, err := maybeAutoRememberUserMessage(cfg, "oc_chat", "默认请用简体中文回复")
+	if err != nil {
+		t.Fatalf("second maybeAutoRememberUserMessage() error = %v", err)
+	}
+	if action != autoMemoryActionReinforced {
+		t.Fatalf("second action = %q, want %q", action, autoMemoryActionReinforced)
+	}
+	if reinforced.ID != entry.ID {
+		t.Fatalf("reinforced.ID = %q, want %q", reinforced.ID, entry.ID)
+	}
+	if reinforced.Priority <= entry.Priority {
+		t.Fatalf("reinforced.Priority = %d, want > %d", reinforced.Priority, entry.Priority)
+	}
+	if reinforced.ReinforceCount != 1 || reinforced.LastReinforcedAt == "" {
+		t.Fatalf("reinforced tracking = %#v", reinforced)
+	}
+}
+
+func TestMaybeAutoRememberUserMessageDoesNotMergeDifferentRules(t *testing.T) {
+	repo := t.TempDir()
+	cfg := Config{RepoRoot: repo, AccountName: "assistant"}
+	first, action, err := maybeAutoRememberUserMessage(cfg, "oc_chat", "请始终先给结论再解释")
+	if err != nil {
+		t.Fatalf("first maybeAutoRememberUserMessage() error = %v", err)
+	}
+	if action != autoMemoryActionAdded {
+		t.Fatalf("first action = %q, want %q", action, autoMemoryActionAdded)
+	}
+	second, action, err := maybeAutoRememberUserMessage(cfg, "oc_chat", "请始终顺手跑测试")
+	if err != nil {
+		t.Fatalf("second maybeAutoRememberUserMessage() error = %v", err)
+	}
+	if action != autoMemoryActionAdded {
+		t.Fatalf("second action = %q, want %q", action, autoMemoryActionAdded)
+	}
+	if second.ID == first.ID {
+		t.Fatalf("second.ID = %q, want a different memory from %q", second.ID, first.ID)
+	}
+}
+
+func TestMaybeAutoRememberUserMessageRevivesArchivedMemory(t *testing.T) {
+	repo := t.TempDir()
+	cfg := Config{RepoRoot: repo, AccountName: "assistant"}
+	store := memory.NewLibraryStore(repo, "assistant")
+	entry := memory.Entry{
+		ID:         "mem-archived",
+		Text:       "以后默认用简体中文回复",
+		Kind:       "preference",
+		Priority:   80,
+		Pinned:     true,
+		Archived:   true,
+		ArchivedAt: "2026-03-01T00:00:00Z",
+		CreatedAt:  "2026-03-01T00:00:00Z",
+		UpdatedAt:  "2026-03-01T00:00:00Z",
+	}
+	if err := store.WriteEntry(entry); err != nil {
+		t.Fatalf("WriteEntry() error = %v", err)
+	}
+
+	revived, action, err := maybeAutoRememberUserMessage(cfg, "oc_chat", "默认请用简体中文回复")
+	if err != nil {
+		t.Fatalf("maybeAutoRememberUserMessage() error = %v", err)
+	}
+	if action != autoMemoryActionReinforced {
+		t.Fatalf("action = %q, want %q", action, autoMemoryActionReinforced)
+	}
+	if revived.ID != entry.ID {
+		t.Fatalf("revived.ID = %q, want %q", revived.ID, entry.ID)
+	}
+	if revived.Archived || revived.ArchivedAt != "" {
+		t.Fatalf("revived archive fields = archived:%t archived_at:%q", revived.Archived, revived.ArchivedAt)
+	}
+}
+
+func TestLoadRelevantMemoriesPrefersReinforcedMemories(t *testing.T) {
+	repo := t.TempDir()
+	store := memory.NewLibraryStore(repo, "assistant")
+	for _, entry := range []memory.Entry{
+		{
+			ID:             "mem-reinforced",
+			Text:           "中文回复",
+			Priority:       20,
+			ReinforceCount: 4,
+			CreatedAt:      "2026-03-18T00:00:00Z",
+			UpdatedAt:      "2026-03-18T00:00:00Z",
+		},
+		{
+			ID:        "mem-used",
+			Text:      "中文回复",
+			Priority:  20,
+			UseCount:  2,
+			CreatedAt: "2026-03-19T00:00:00Z",
+			UpdatedAt: "2026-03-19T00:00:00Z",
+		},
+	} {
+		if err := store.WriteEntry(entry); err != nil {
+			t.Fatalf("WriteEntry(%s) error = %v", entry.ID, err)
+		}
+	}
+	cfg := Config{RepoRoot: repo, AccountName: "assistant"}
+	entries, err := loadRelevantMemories(cfg, "请用中文回复")
+	if err != nil {
+		t.Fatalf("loadRelevantMemories() error = %v", err)
+	}
+	if len(entries) != 1 || entries[0].ID != "mem-reinforced" {
+		t.Fatalf("loadRelevantMemories() = %#v", entries)
+	}
+}
+
+func TestWriteRelevantMemoryMatchesIncludesCollapseReason(t *testing.T) {
+	var buf bytes.Buffer
+	writeRelevantMemoryMatches(&buf, []memory.RecallMatch{
+		{
+			Entry: memory.Entry{ID: "mem-primary"},
+			Score: 123,
+			Reasons: []string{
+				"term:中文",
+				"collapsed_similar:2",
+			},
+		},
+	})
+	output := buf.String()
+	if !strings.Contains(output, "memory_auto_search_hit=1") {
+		t.Fatalf("output missing hit index: %q", output)
+	}
+	if !strings.Contains(output, "id=mem-primary") {
+		t.Fatalf("output missing id: %q", output)
+	}
+	if !strings.Contains(output, "collapsed_similar:2") {
+		t.Fatalf("output missing collapse reason: %q", output)
 	}
 }
 
@@ -1058,6 +1849,25 @@ func TestFormatWorkspaceDocsHelpMentionsRefresh(t *testing.T) {
 	}
 	if !strings.Contains(text, "跳过 WebDAV restore") {
 		t.Fatalf("help missing restore note:\n%s", text)
+	}
+}
+
+func TestFormatMemoryHelpMentionsForceShortcutAndCollapsedRecall(t *testing.T) {
+	text := formatMemoryHelp()
+	for _, want := range []string{
+		"/memory help",
+		"/memory remove <记忆ID>",
+		"/memory remove 是 /memory delete 的别名",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("help missing %q:\n%s", want, text)
+		}
+	}
+	if !strings.Contains(text, "/memory force 是 /memory add --force-new 的简写。") {
+		t.Fatalf("help missing force shortcut note:\n%s", text)
+	}
+	if !strings.Contains(text, "collapsed_similar") {
+		t.Fatalf("help missing collapsed_similar note:\n%s", text)
 	}
 }
 

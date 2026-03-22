@@ -518,6 +518,7 @@ suncodexclawd timer update daily-report \
 
 机器人支持直接在飞书里用 `/timer` 管理任务，例如：
 
+- `/timer help`
 - `/timer list`
 - `/timer show daily-report`
 - `/timer run daily-report`
@@ -540,31 +541,135 @@ suncodexclawd timer update daily-report \
 - 每个机器人使用独立记忆库
 - 存储位置：`config/memory/libraries/<account-namespace>/entries/*.json`
 - 适合存长期偏好、长期规则、检索线索
+- 运行 Codex 前会自动检索相关长期记忆并注入上下文
+- 明显的长期偏好或规则类用户消息会谨慎自动写入记忆
+- 如果用户再次强调相同或近似表达的长期偏好或规则，系统会在去重的同时累积 `reinforce_count / last_reinforced_at` 并温和提升其权重
+- 可通过 `kind / priority / pinned` 主动调节召回权重
+- 被实际召回并参与回答的记忆会累积 `use_count / last_used_at`，后续排序会适度偏向“经常真的有用”的记忆
+- 低价值旧记忆可先归档而不是直接删除；归档后默认不会参与召回、搜索、重复检测，但仍可恢复
+- 在机器人工作目录里，命令行 `memory` 子命令可从 `.config.toml` 自动推断 `--account`；在仓库根目录下仍建议显式传入
 
 常用命令：
 
 ```bash
 suncodexclawd memory add --account <account> --text "以后默认用简体中文回复"
+suncodexclawd memory add --account <account> --text "以后默认用简体中文回复" --force-new
+suncodexclawd memory force --account <account> --text "以后默认用简体中文回复"
+suncodexclawd memory force --account <account> --text "以后默认用简体中文回复" --json
+suncodexclawd memory stats --account <account>
+suncodexclawd memory stats --account <account> --limit 10
+suncodexclawd memory stats --account <account> --json
+suncodexclawd memory add --account <account> --text "以后默认用简体中文回复" --json
+suncodexclawd memory list --account <account> --json
+suncodexclawd memory search 中文 --account <account> --json
+suncodexclawd memory review --account <account>
+suncodexclawd memory review --account <account> --min-score 130 --stale-days 45
+suncodexclawd memory review --account <account> --apply-promote
+suncodexclawd memory review --account <account> --apply-stale
+suncodexclawd memory review --account <account> --apply-all --min-score 130
+suncodexclawd memory archive mem-20260320-090000-000 --account <account>
+suncodexclawd memory unarchive mem-20260320-090000-000 --account <account>
+suncodexclawd memory purge --account <account>
+suncodexclawd memory purge --account <account> --days 45
+suncodexclawd memory purge --account <account> --days 45 --apply
+suncodexclawd memory related mem-20260320-090000-000 --account <account>
+suncodexclawd memory related mem-20260320-090000-000 --account <account> --min-score 130
+suncodexclawd memory duplicates --account <account> --min-score 100
+suncodexclawd memory dedupe --account <account> --min-score 100
+suncodexclawd memory dedupe --account <account> --min-score 130 --apply
+suncodexclawd memory update mem-20260320-090000-000 --account <account> --kind preference --priority 80 --pinned
+suncodexclawd memory pin mem-20260320-090000-000 --account <account>
+suncodexclawd memory unpin mem-20260320-090000-000 --account <account>
+suncodexclawd memory list --account <account> --archived
+suncodexclawd memory search 中文 --account <account> --archived
+suncodexclawd memory recall 中文回复 --account <account>
+suncodexclawd memory recall 中文回复 --account <account> --all
+suncodexclawd memory recall 中文回复 --account <account> --json
+suncodexclawd memory related mem-20260320-090000-000 --account <account> --json
+suncodexclawd memory duplicates --account <account> --min-score 100 --json
+suncodexclawd memory dedupe --account <account> --min-score 100 --json
+suncodexclawd memory dedupe --account <account> --min-score 130 --apply --json
+suncodexclawd memory update mem-20260320-090000-000 --account <account> --kind preference --priority 80 --pinned --json
+suncodexclawd memory pin mem-20260320-090000-000 --account <account> --json
+suncodexclawd memory archive mem-20260320-090000-000 --account <account> --json
+suncodexclawd memory merge mem-20260320-090000-000 mem-20260319-080000-000 mem-20260318-070000-000 --account <account>
+suncodexclawd memory merge mem-20260320-090000-000 mem-20260319-080000-000 --account <account> --json
 suncodexclawd memory list --account <account>
 suncodexclawd memory search 中文 --account <account>
 suncodexclawd memory show mem-20260320-090000-000 --account <account>
 suncodexclawd memory delete mem-20260320-090000-000 --account <account>
+suncodexclawd memory delete mem-20260320-090000-000 --account <account> --json
 ```
 
 ## 飞书里的 `/memory`
 
 机器人支持直接在飞书里用 `/memory` 管理长期记忆，例如：
 
+- `/memory help`
 - `/memory 以后默认用简体中文回复`
 - `/memory add 代码修改后默认顺手跑测试`
+- `/memory add --force-new 以后默认用简体中文回复`
+- `/memory force 以后默认用简体中文回复`
 - `/memory list`
+- `/memory review`
+- `/memory review 130`
+- `/memory stats`
+- `/memory stats 10`
+- `/memory review apply`
+- `/memory review apply stale 130`
+- `/memory review apply promote`
+- `/memory list archived`
+- `/memory list all`
+- `/memory recall 中文回复`
+- `/memory recall archived 中文回复`
+- `/memory purge`
+- `/memory purge 45`
+- `/memory purge apply 45`
+- `/memory archive mem-20260320-090000-000`
+- `/memory unarchive mem-20260320-090000-000`
+- `/memory related mem-20260320-090000-000`
+- `/memory related mem-20260320-090000-000 130`
+- `/memory duplicates`
+- `/memory duplicates 130`
+- `/memory dedupe`
+- `/memory dedupe apply`
+- `/memory dedupe apply 130`
 - `/memory search 中文`
+- `/memory search archived 中文`
+- `/memory search all 中文`
 - `/memory show mem-20260320-090000-000`
+- `/memory pin mem-20260320-090000-000`
+- `/memory unpin mem-20260320-090000-000`
+- `/memory merge mem-20260320-090000-000 mem-20260319-080000-000 mem-20260318-070000-000`
+- `/memory update mem-20260320-090000-000 以后默认先给结论再解释`
 - `/memory delete mem-20260320-090000-000`
+- `/memory remove mem-20260320-090000-000`
 
 说明：
 
 - `/memory` 默认操作当前机器人账号自己的独立记忆库
+- `memory review` / `/memory review` 会主动汇总重复候选、值得晋升的高价值记忆、以及长期闲置的低价值 note，适合做治理体检
+- `memory add` / `/memory add` 在命中高置信度重复时会优先强化已有记忆，而不是继续创建近似重复条目
+- `memory force` / `/memory force` 是 `memory add --force-new` / `/memory add --force-new` 的简写
+- 如果你确实需要保留一条新的近似重复记忆，可在命令行使用 `memory add --force-new` 或 `memory force`，也可在飞书里使用 `/memory add --force-new ...`、`/memory force ...`
+- `memory recall` / `/memory recall` 会直接预览当前自动召回逻辑会命中的记忆排序，适合调试 active memory
+- `memory recall` 的输出会附带简单命中原因，便于理解是文本匹配、priority、pinned、reinforce 还是 use_count 在起作用
+- 自动 recall 遇到高度相似的重复记忆时，会优先保留排序更高的一条，并在原因里补充 `collapsed_similar:N`，避免重复规则一起污染上下文
+- `memory stats` / `/memory stats` 会输出当前记忆库总览，适合先看 active/archived、kind 分布和 top memories 再决定下一步治理动作
+- 除 `memory show` 默认直接输出原始 JSON 外，大部分 `memory` 子命令都支持 `--json`，方便自动化或外部面板直接消费
+- `memory review --apply-promote|--apply-stale|--apply-all` 与飞书 `/memory review apply ...` 默认不会处理 duplicate 分组，只会批量执行 promote 和/或 stale->archive
+- `memory archive` / `/memory archive` 会把记忆从默认召回和搜索结果里隐藏，但不会永久丢失；适合处理 stale note
+- `memory purge` / `/memory purge` 默认只预览超过保留期的归档记忆；显式 apply 后才会物理删除
+- 飞书里的 `/memory list archived|all` 和 `/memory search archived|all <关键词>` 可直接排查归档记忆
+- `memory related` / `/memory related` 支持围绕单条记忆查看附近的近似或重复候选，适合在 merge 前做点状检查
+- `memory duplicates` / `memory dedupe` 支持 `--min-score`，值越高越保守，只看更高置信度的重复候选
+- 飞书里的 `/memory review 130`、`/memory related mem-xxx 130`、`/memory duplicates 130`、`/memory dedupe 130`、`/memory dedupe apply 130` 也支持同样的阈值控制
+- `/memory duplicates` 会先列出疑似重复候选，适合在 merge 前做人工确认
+- `/memory dedupe` 默认只预览会合并哪些分组；显式使用 `/memory dedupe apply` 或命令行 `memory dedupe --apply` 时才会真正批量合并
+- `/memory pin` 可以把高价值长期规则固定到更高优先级，便于自动召回
+- `/memory remove` 是 `/memory delete` 的别名，适合顺手删除低价值错误条目
+- 命令行的 `memory list/search` 支持 `--archived` 查看归档记忆，也支持 `--all` 同时查看活跃和归档条目
+- `/memory merge` 会保留一条主记忆，并吸收其他重复或近似条目的元数据后删除它们
 
 ## 环境变量库
 
@@ -596,6 +701,7 @@ suncodexclawd env run --account <account> --key OPENAI_API_KEY -- your-command
 
 机器人支持直接在飞书里用 `/env` 管理敏感配置，例如：
 
+- `/env help`
 - `/env list`
 - `/env list global`
 - `/env get OPENAI_API_KEY`
@@ -645,7 +751,7 @@ suncodexclawd workspace-docs refresh
 
 - 该命令会跳过 restore，直接覆盖 `agent.md`、`soul.md`、`heartbeats.md`
 - 同时会刷新 `.config.toml`
-- 飞书里也支持 `/docs refresh` 或 `/workspace-docs refresh`
+- 飞书里也支持 `/docs help`、`/docs refresh`、`/workspace-docs help` 或 `/workspace-docs refresh`
 
 ## 文档同步与备份
 
@@ -707,6 +813,7 @@ suncodexclawd sync restore --account <account> --snapshot latest
 
 机器人支持直接在飞书里用 `/sync` 管理文档备份：
 
+- `/sync help`
 - `/sync status`
 - `/sync list`
 - `/sync push`

@@ -97,7 +97,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  suncodexclawd preflight [--account a] [--account b] [--repo .] [--node-bin node] [--no-launchctl]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd preflight --docker-compose [--account a] [--account b] [--repo .]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd timer <start|list|show|upsert|update|logs|run|enable|disable|delete>")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd memory <add|list|show|search|delete>")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory <add|force|stats|list|show|search|recall|review|related|duplicates|dedupe|update|pin|unpin|archive|unarchive|purge|merge|delete>")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd env <set|get|list|delete|run>")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd clawhub <search|list|show|file>")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd sync <status|list-remote|push|pull|restore>")
@@ -1286,12 +1286,40 @@ func memoryCmd(args []string) {
 	switch args[0] {
 	case "add":
 		memoryAdd(args[1:])
+	case "force":
+		memoryForce(args[1:])
 	case "list":
 		memoryList(args[1:])
+	case "stats":
+		memoryStats(args[1:])
 	case "show":
 		memoryShow(args[1:])
 	case "search":
 		memorySearch(args[1:])
+	case "recall":
+		memoryRecall(args[1:])
+	case "archive":
+		memoryArchive(args[1:], true)
+	case "unarchive":
+		memoryArchive(args[1:], false)
+	case "purge":
+		memoryPurge(args[1:])
+	case "review":
+		memoryReview(args[1:])
+	case "related":
+		memoryRelated(args[1:])
+	case "duplicates":
+		memoryDuplicates(args[1:])
+	case "dedupe":
+		memoryDedupe(args[1:])
+	case "update":
+		memoryUpdate(args[1:])
+	case "pin":
+		memoryPin(args[1:], true)
+	case "unpin":
+		memoryPin(args[1:], false)
+	case "merge":
+		memoryMerge(args[1:])
 	case "delete":
 		memoryDelete(args[1:])
 	case "help", "--help", "-h":
@@ -1481,14 +1509,45 @@ func timerUsage() {
 
 func memoryUsage() {
 	fmt.Fprintln(os.Stderr, "Memory Usage:")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd memory add [--docker-compose] --account <account> --text \"...\" [--source feishu/<account>/oc_xxx] [--tag foo] [--tag bar] [--repo .]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd memory list [--docker-compose] --account <account> [--repo .] [--limit 20]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory add [--docker-compose] --account <account> --text \"...\" [--source feishu/<account>/oc_xxx] [--tag foo] [--tag bar] [--kind preference|rule|note] [--priority 0-100] [--pinned] [--force-new] [--repo .] [--json]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory force [--docker-compose] --account <account> --text \"...\" [--source feishu/<account>/oc_xxx] [--tag foo] [--tag bar] [--kind preference|rule|note] [--priority 0-100] [--pinned] [--repo .] [--json]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory stats [--docker-compose] --account <account> [--repo .] [--limit 5] [--json]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory list [--docker-compose] --account <account> [--repo .] [--limit 20] [--all|--archived] [--json]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd memory show <id> [--docker-compose] --account <account> [--repo .]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd memory search <keyword> [--docker-compose] --account <account> [--repo .] [--limit 20]")
-	fmt.Fprintln(os.Stderr, "  suncodexclawd memory delete <id> [--docker-compose] --account <account> [--repo .]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory search <keyword> [--docker-compose] --account <account> [--repo .] [--limit 20] [--all|--archived] [--json]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory recall <keyword> [--docker-compose] --account <account> [--repo .] [--limit 4] [--all|--archived] [--json]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory review [--docker-compose] --account <account> [--repo .] [--limit 10] [--min-score 100] [--stale-days 30] [--apply-promote] [--apply-stale] [--apply-all] [--json]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory related <id> [--docker-compose] --account <account> [--repo .] [--limit 10] [--min-score 100] [--json]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory duplicates [--docker-compose] --account <account> [--repo .] [--limit 20] [--min-score 100] [--json]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory dedupe [--docker-compose] --account <account> [--repo .] [--limit 20] [--min-score 100] [--apply] [--json]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory update <id> [--docker-compose] --account <account> [--text \"...\"] [--text-file PATH] [--source label] [--clear-source] [--tag foo] [--clear-tags] [--kind preference|rule|note] [--clear-kind] [--priority 0-100] [--pinned|--unpinned] [--repo .] [--json]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory pin <id> [--docker-compose] --account <account> [--repo .] [--json]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory unpin <id> [--docker-compose] --account <account> [--repo .] [--json]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory archive <id> [--docker-compose] --account <account> [--repo .] [--json]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory unarchive <id> [--docker-compose] --account <account> [--repo .] [--json]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory purge [--docker-compose] --account <account> [--repo .] [--days 30] [--limit 20] [--apply] [--json]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory merge <keep-id> <drop-id> [drop-id ...] [--docker-compose] --account <account> [--repo .] [--json]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd memory delete <id> [--docker-compose] --account <account> [--repo .] [--json]")
 	fmt.Fprintln(os.Stderr, "Notes:")
 	fmt.Fprintln(os.Stderr, "  - In a bot workspace, memory commands can infer --account from .config.toml.")
 	fmt.Fprintln(os.Stderr, "  - Outside a bot workspace, pass --account <account> explicitly.")
+	fmt.Fprintln(os.Stderr, "  - kind/priority/pinned can be used to make a memory behave more like a durable rule than a casual note.")
+	fmt.Fprintln(os.Stderr, "  - Use memory stats to get a quick overview of active/archived counts and the top recalled/reinforced memories.")
+	fmt.Fprintln(os.Stderr, "  - Use memory pin/unpin or memory update to actively tune what the bot recalls first.")
+	fmt.Fprintln(os.Stderr, "  - Most memory commands support --json for automation-friendly output; memory show already prints raw JSON.")
+	fmt.Fprintln(os.Stderr, "  - memory add will conservatively reinforce an existing high-confidence duplicate instead of creating another near-identical entry.")
+	fmt.Fprintln(os.Stderr, "  - Add --force-new to memory add only when you intentionally want to keep another near-duplicate entry.")
+	fmt.Fprintln(os.Stderr, "  - memory force is a shortcut for memory add --force-new.")
+	fmt.Fprintln(os.Stderr, "  - Archive stale memories first; permanent delete should be reserved for entries you are sure you no longer need.")
+	fmt.Fprintln(os.Stderr, "  - Use memory recall to preview which memories the current auto-recall logic would surface for a query.")
+	fmt.Fprintln(os.Stderr, "  - Use memory purge to preview old archived memories before physically deleting them.")
+	fmt.Fprintln(os.Stderr, "  - Use memory review to proactively inspect duplicates, promotion candidates, and stale notes.")
+	fmt.Fprintln(os.Stderr, "  - Add --apply-promote, --apply-stale, or --apply-all only when you want review suggestions to be executed in batch.")
+	fmt.Fprintln(os.Stderr, "  - Use memory related <id> to inspect one memory's nearby duplicate/similar candidates before merging.")
+	fmt.Fprintln(os.Stderr, "  - Use memory duplicates to find likely duplicates before deciding whether to merge.")
+	fmt.Fprintln(os.Stderr, "  - Raise --min-score to inspect only higher-confidence duplicate candidates.")
+	fmt.Fprintln(os.Stderr, "  - Use memory dedupe to preview or batch-merge duplicate groups discovered by memory duplicates.")
+	fmt.Fprintln(os.Stderr, "  - Use memory merge to keep one canonical memory and absorb duplicate/history variants into it.")
 }
 
 func envUsage() {
@@ -2077,12 +2136,22 @@ func resolveUpdatedTimerSchedule(existing timer.Schedule, every, daily, weekly, 
 }
 
 func memoryAdd(args []string) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{
+		"--pinned":    true,
+		"--json":      true,
+		"--force-new": true,
+	})
 	fs := flag.NewFlagSet("memory add", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	account := fs.String("account", "", "memory library / robot account name")
 	text := fs.String("text", "", "memory text")
 	textFile := fs.String("text-file", "", "memory text file")
 	source := fs.String("source", "", "memory source label")
+	kind := fs.String("kind", "", "memory kind: preference|rule|note")
+	priority := fs.Int("priority", 0, "memory priority 0-100")
+	pinned := fs.Bool("pinned", false, "pin this memory so it ranks higher")
+	forceNew := fs.Bool("force-new", false, "always create a new memory entry instead of reinforcing a duplicate")
+	jsonOut := fs.Bool("json", false, "print raw JSON")
 	var tags multiFlag
 	fs.Var(&tags, "tag", "memory tag (repeatable)")
 	_ = fs.Parse(args)
@@ -2110,19 +2179,134 @@ func memoryAdd(args []string) {
 		os.Exit(2)
 	}
 	store := memory.NewLibraryStore(repo, resolvedAccount)
-	entry, err := store.Add(memoryText, *source, tags)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+	var result memory.RememberResult
+	if *forceNew {
+		entry, err := store.AddWithOptions(memoryText, memory.AddOptions{
+			Source:   *source,
+			Tags:     tags,
+			Kind:     *kind,
+			Priority: *priority,
+			Pinned:   *pinned,
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		result = memory.RememberResult{Entry: entry, Action: "added"}
+	} else {
+		var err error
+		result, err = store.RememberWithOptions(memoryText, memory.AddOptions{
+			Source:   *source,
+			Tags:     tags,
+			Kind:     *kind,
+			Priority: *priority,
+			Pinned:   *pinned,
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	}
-	fmt.Printf("library=%s added=%s source=%s tags=%s text=%s\n", sanitizePathSegment(resolvedAccount), entry.ID, emptyFallback(entry.Source, "(none)"), emptyFallback(strings.Join(entry.Tags, ","), "(none)"), compactSingleLine(entry.Text, 120))
+	if *jsonOut {
+		printJSONPayload(map[string]any{
+			"library":      sanitizePathSegment(resolvedAccount),
+			"action":       result.Action,
+			"entry":        result.Entry,
+			"force_new":    *forceNew,
+			"match_score":  result.MatchScore,
+			"match_reason": result.MatchReason,
+		})
+		return
+	}
+	actionLabel := "added"
+	if strings.TrimSpace(result.Action) == "reinforced" {
+		actionLabel = "reinforced"
+	}
+	entry := result.Entry
+	fmt.Printf("library=%s %s=%s force_new=%t source=%s kind=%s priority=%d pinned=%t tags=%s text=%s",
+		sanitizePathSegment(resolvedAccount),
+		actionLabel,
+		entry.ID,
+		*forceNew,
+		emptyFallback(entry.Source, "(none)"),
+		emptyFallback(entry.Kind, "(none)"),
+		entry.Priority,
+		entry.Pinned,
+		emptyFallback(strings.Join(entry.Tags, ","), "(none)"),
+		compactSingleLine(entry.Text, 120),
+	)
+	if result.MatchScore > 0 {
+		fmt.Printf(" match_score=%d match_reason=%s", result.MatchScore, emptyFallback(result.MatchReason, "(none)"))
+	}
+	fmt.Println()
+}
+
+func memoryForce(args []string) {
+	forcedArgs := make([]string, 0, len(args)+1)
+	forcedArgs = append(forcedArgs, "--force-new")
+	forcedArgs = append(forcedArgs, args...)
+	memoryAdd(forcedArgs)
 }
 
 func memoryList(args []string) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{"--json": true})
 	fs := flag.NewFlagSet("memory list", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	account := fs.String("account", "", "memory library / robot account name")
 	limit := fs.Int("limit", 20, "max memories to show")
+	includeArchived := fs.Bool("all", false, "include archived memories")
+	archivedOnly := fs.Bool("archived", false, "show archived memories only")
+	jsonOut := fs.Bool("json", false, "print raw JSON")
+	_ = fs.Parse(args)
+	if *includeArchived && *archivedOnly {
+		fmt.Fprintln(os.Stderr, "error: --all and --archived cannot be used together")
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveMemoryAccount(strings.TrimSpace(*account))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	store := memory.NewLibraryStore(repo, resolvedAccount)
+	entries, err := store.ListEntriesWithOptions(memory.QueryOptions{
+		IncludeArchived: *includeArchived,
+		ArchivedOnly:    *archivedOnly,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	trimmedEntries := entries
+	if len(trimmedEntries) > *limit {
+		trimmedEntries = trimmedEntries[:*limit]
+	}
+	if *jsonOut {
+		printJSONPayload(map[string]any{
+			"library":          sanitizePathSegment(resolvedAccount),
+			"limit":            *limit,
+			"include_archived": *includeArchived,
+			"archived_only":    *archivedOnly,
+			"entries":          trimmedEntries,
+		})
+		return
+	}
+	if len(entries) == 0 {
+		fmt.Println("(no memories)")
+		return
+	}
+	for _, entry := range trimmedEntries {
+		fmt.Println(memorySummaryLine(entry))
+	}
+}
+
+func memoryStats(args []string) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{"--json": true})
+	fs := flag.NewFlagSet("memory stats", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "memory library / robot account name")
+	limit := fs.Int("limit", 5, "max entries to show in each leaderboard")
+	jsonOut := fs.Bool("json", false, "print raw JSON")
 	_ = fs.Parse(args)
 	repo := resolveRepoRoot(*repoFlag)
 	resolvedAccount, err := resolveMemoryAccount(strings.TrimSpace(*account))
@@ -2131,21 +2315,36 @@ func memoryList(args []string) {
 		os.Exit(1)
 	}
 	store := memory.NewLibraryStore(repo, resolvedAccount)
-	entries, err := store.ListEntries()
+	stats, err := store.Stats(*limit)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	if len(entries) == 0 {
-		fmt.Println("(no memories)")
+	if *jsonOut {
+		printJSONPayload(map[string]any{
+			"library": sanitizePathSegment(resolvedAccount),
+			"limit":   *limit,
+			"stats":   stats,
+		})
 		return
 	}
-	for i, entry := range entries {
-		if i >= *limit {
-			break
-		}
-		fmt.Println(memorySummaryLine(entry))
-	}
+	fmt.Printf("library=%s total=%d active=%d archived=%d pinned=%d\n",
+		sanitizePathSegment(resolvedAccount),
+		stats.TotalEntries,
+		stats.ActiveEntries,
+		stats.ArchivedEntries,
+		stats.PinnedEntries,
+	)
+	fmt.Printf("kinds=%s\n", formatMemoryKindCounts(stats.KindCounts))
+	printMemoryEntrySection("[top_used]", stats.TopUsed, func(entry memory.Entry) string {
+		return fmt.Sprintf("use_count=%d", entry.UseCount)
+	})
+	printMemoryEntrySection("[top_reinforced]", stats.TopReinforced, func(entry memory.Entry) string {
+		return fmt.Sprintf("reinforce_count=%d", entry.ReinforceCount)
+	})
+	printMemoryEntrySection("[top_priority]", stats.TopPriority, func(entry memory.Entry) string {
+		return fmt.Sprintf("priority=%d pinned=%t", entry.Priority, entry.Pinned)
+	})
 }
 
 func memoryShow(args []string) {
@@ -2179,12 +2378,19 @@ func memoryShow(args []string) {
 }
 
 func memorySearch(args []string) {
-	args = reorderFlagsBeforePositionals(args, nil)
+	args = reorderFlagsBeforePositionals(args, map[string]bool{"--json": true})
 	fs := flag.NewFlagSet("memory search", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	account := fs.String("account", "", "memory library / robot account name")
 	limit := fs.Int("limit", 20, "max memories to show")
+	includeArchived := fs.Bool("all", false, "include archived memories")
+	archivedOnly := fs.Bool("archived", false, "search archived memories only")
+	jsonOut := fs.Bool("json", false, "print raw JSON")
 	_ = fs.Parse(args)
+	if *includeArchived && *archivedOnly {
+		fmt.Fprintln(os.Stderr, "error: --all and --archived cannot be used together")
+		os.Exit(2)
+	}
 	query := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	if query == "" {
 		fmt.Fprintln(os.Stderr, "error: search keyword is required")
@@ -2197,10 +2403,24 @@ func memorySearch(args []string) {
 		os.Exit(1)
 	}
 	store := memory.NewLibraryStore(repo, resolvedAccount)
-	entries, err := store.Search(query, *limit)
+	entries, err := store.SearchWithOptions(query, *limit, memory.QueryOptions{
+		IncludeArchived: *includeArchived,
+		ArchivedOnly:    *archivedOnly,
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
+	}
+	if *jsonOut {
+		printJSONPayload(map[string]any{
+			"library":          sanitizePathSegment(resolvedAccount),
+			"query":            query,
+			"limit":            *limit,
+			"include_archived": *includeArchived,
+			"archived_only":    *archivedOnly,
+			"entries":          entries,
+		})
+		return
 	}
 	if len(entries) == 0 {
 		fmt.Println("(no matched memories)")
@@ -2211,11 +2431,209 @@ func memorySearch(args []string) {
 	}
 }
 
-func memoryDelete(args []string) {
-	args = reorderFlagsBeforePositionals(args, nil)
-	fs := flag.NewFlagSet("memory delete", flag.ExitOnError)
+func memoryRecall(args []string) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{"--json": true})
+	fs := flag.NewFlagSet("memory recall", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
 	account := fs.String("account", "", "memory library / robot account name")
+	limit := fs.Int("limit", 4, "max memories to show")
+	includeArchived := fs.Bool("all", false, "include archived memories")
+	archivedOnly := fs.Bool("archived", false, "recall archived memories only")
+	jsonOut := fs.Bool("json", false, "print raw JSON")
+	_ = fs.Parse(args)
+	if *includeArchived && *archivedOnly {
+		fmt.Fprintln(os.Stderr, "error: --all and --archived cannot be used together")
+		os.Exit(2)
+	}
+	query := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	if query == "" {
+		fmt.Fprintln(os.Stderr, "error: recall keyword is required")
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveMemoryAccount(strings.TrimSpace(*account))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	store := memory.NewLibraryStore(repo, resolvedAccount)
+	matches, err := store.FindRecallMatchesWithOptions(query, *limit, memory.QueryOptions{
+		IncludeArchived: *includeArchived,
+		ArchivedOnly:    *archivedOnly,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if *jsonOut {
+		printJSONPayload(map[string]any{
+			"library":          sanitizePathSegment(resolvedAccount),
+			"query":            query,
+			"limit":            *limit,
+			"include_archived": *includeArchived,
+			"archived_only":    *archivedOnly,
+			"matches":          matches,
+		})
+		return
+	}
+	fmt.Printf("query=%s recalled=%d\n", compactSingleLine(query, 120), len(matches))
+	if len(matches) == 0 {
+		fmt.Println("(no recalled memories)")
+		return
+	}
+	for _, match := range matches {
+		fmt.Printf("match_score=%d reasons=%s\n", match.Score, emptyFallback(strings.Join(match.Reasons, ","), "(none)"))
+		fmt.Println("  " + memorySummaryLine(match.Entry))
+	}
+}
+
+func memoryReview(args []string) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{"--json": true})
+	fs := flag.NewFlagSet("memory review", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "memory library / robot account name")
+	limit := fs.Int("limit", 10, "max suggestions to show per section")
+	minScore := fs.Int("min-score", memory.DefaultDuplicateMinScore, "minimum duplicate confidence score")
+	staleDays := fs.Int("stale-days", 30, "minimum idle days before suggesting stale note cleanup")
+	applyPromote := fs.Bool("apply-promote", false, "apply promote suggestions")
+	applyStale := fs.Bool("apply-stale", false, "archive stale suggestions")
+	applyAll := fs.Bool("apply-all", false, "apply promote and stale suggestions")
+	jsonOut := fs.Bool("json", false, "print raw JSON")
+	_ = fs.Parse(args)
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveMemoryAccount(strings.TrimSpace(*account))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	store := memory.NewLibraryStore(repo, resolvedAccount)
+	report, err := store.Review(memory.ReviewOptions{
+		Limit:             *limit,
+		DuplicateMinScore: *minScore,
+		StaleDays:         *staleDays,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if *applyAll {
+		*applyPromote = true
+		*applyStale = true
+	}
+	if *applyPromote || *applyStale {
+		result, err := store.ApplyReview(report, memory.ReviewApplyOptions{
+			Promote:      *applyPromote,
+			ArchiveStale: *applyStale,
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		if *jsonOut {
+			printJSONPayload(map[string]any{
+				"library":        sanitizePathSegment(resolvedAccount),
+				"limit":          *limit,
+				"min_score":      *minScore,
+				"stale_days":     *staleDays,
+				"apply_promote":  *applyPromote,
+				"apply_stale":    *applyStale,
+				"report":         report,
+				"applied_result": result,
+			})
+			return
+		}
+		fmt.Printf("library=%s total=%d duplicate_groups=%d promote=%d stale=%d min_score=%d stale_days=%d\n",
+			sanitizePathSegment(resolvedAccount),
+			report.TotalEntries,
+			len(report.DuplicateGroups),
+			len(report.PromoteSuggestions),
+			len(report.StaleSuggestions),
+			*minScore,
+			*staleDays,
+		)
+		if len(report.DuplicateGroups) > 0 {
+			fmt.Println("[duplicates]")
+			printMemoryDuplicateGroups(report.DuplicateGroups, resolvedAccount)
+		}
+		if *applyPromote {
+			fmt.Printf("[applied_promote] count=%d\n", len(result.Promoted))
+			for i, entry := range result.Promoted {
+				fmt.Printf("promoted=%d id=%s priority=%d pinned=%t\n", i+1, entry.ID, entry.Priority, entry.Pinned)
+				fmt.Println("  " + memorySummaryLine(entry))
+			}
+		}
+		if *applyStale {
+			fmt.Printf("[applied_stale] count=%d\n", len(result.Archived))
+			for i, entry := range result.Archived {
+				fmt.Printf("archived=%d id=%s archived_at=%s\n", i+1, entry.ID, emptyFallback(strings.TrimSpace(entry.ArchivedAt), "(none)"))
+				fmt.Println("  " + memorySummaryLine(entry))
+			}
+		}
+		if len(result.Promoted) == 0 && len(result.Archived) == 0 && len(report.DuplicateGroups) == 0 {
+			fmt.Println("(no applicable review suggestions)")
+		}
+		return
+	}
+	if *jsonOut {
+		printJSONPayload(map[string]any{
+			"library":       sanitizePathSegment(resolvedAccount),
+			"limit":         *limit,
+			"min_score":     *minScore,
+			"stale_days":    *staleDays,
+			"apply_promote": false,
+			"apply_stale":   false,
+			"report":        report,
+		})
+		return
+	}
+	fmt.Printf("library=%s total=%d duplicate_groups=%d promote=%d stale=%d min_score=%d stale_days=%d\n",
+		sanitizePathSegment(resolvedAccount),
+		report.TotalEntries,
+		len(report.DuplicateGroups),
+		len(report.PromoteSuggestions),
+		len(report.StaleSuggestions),
+		*minScore,
+		*staleDays,
+	)
+	if len(report.DuplicateGroups) == 0 && len(report.PromoteSuggestions) == 0 && len(report.StaleSuggestions) == 0 {
+		fmt.Println("(no review suggestions)")
+		return
+	}
+	if len(report.DuplicateGroups) > 0 {
+		fmt.Println("[duplicates]")
+		printMemoryDuplicateGroups(report.DuplicateGroups, resolvedAccount)
+	}
+	if len(report.PromoteSuggestions) > 0 {
+		fmt.Println("[promote]")
+		for i, item := range report.PromoteSuggestions {
+			fmt.Printf("promote=%d reason=%s target_priority=%d target_pinned=%t\n", i+1, emptyFallback(item.Reason, "(unknown)"), item.TargetScore, item.TargetPin)
+			fmt.Println("  " + memorySummaryLine(item.Entry))
+			fmt.Printf("  suggest=suncodexclawd memory update --account %q --priority %d %s %s\n",
+				resolvedAccount,
+				item.TargetScore,
+				ternaryFlag(item.TargetPin, "--pinned", ""),
+				item.Entry.ID,
+			)
+		}
+	}
+	if len(report.StaleSuggestions) > 0 {
+		fmt.Println("[stale]")
+		for i, item := range report.StaleSuggestions {
+			fmt.Printf("stale=%d reason=%s age_days=%d last_seen=%s\n", i+1, emptyFallback(item.Reason, "(unknown)"), item.AgeDays, emptyFallback(item.LastSeen, "(unknown)"))
+			fmt.Println("  " + memorySummaryLine(item.Entry))
+			fmt.Printf("  suggest=suncodexclawd memory archive --account %q %s\n", resolvedAccount, item.Entry.ID)
+		}
+	}
+}
+
+func memoryRelated(args []string) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{"--json": true})
+	fs := flag.NewFlagSet("memory related", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "memory library / robot account name")
+	limit := fs.Int("limit", 10, "max related memories to show")
+	minScore := fs.Int("min-score", memory.DefaultDuplicateMinScore, "minimum related confidence score")
+	jsonOut := fs.Bool("json", false, "print raw JSON")
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		memoryUsage()
@@ -2228,11 +2646,608 @@ func memoryDelete(args []string) {
 		os.Exit(1)
 	}
 	store := memory.NewLibraryStore(repo, resolvedAccount)
+	target, matches, err := store.FindRelatedEntriesWithMinScore(fs.Arg(0), *limit, *minScore)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if *jsonOut {
+		printJSONPayload(map[string]any{
+			"library":   sanitizePathSegment(resolvedAccount),
+			"target":    target,
+			"matches":   matches,
+			"min_score": *minScore,
+			"limit":     *limit,
+		})
+		return
+	}
+	fmt.Printf("target=%s related=%d min_score=%d\n", target.ID, len(matches), *minScore)
+	fmt.Println("  " + memorySummaryLine(target))
+	if len(matches) == 0 {
+		fmt.Println("  (no related memories)")
+		return
+	}
+	relatedIDs := make([]string, 0, len(matches))
+	for _, match := range matches {
+		fmt.Printf("  match_score=%d reason=%s\n", match.Score, emptyFallback(match.Reason, "(unknown)"))
+		fmt.Println("  " + memorySummaryLine(match.Entry))
+		relatedIDs = append(relatedIDs, match.Entry.ID)
+	}
+	fmt.Printf("  suggest=suncodexclawd memory merge --account %q %s %s\n",
+		resolvedAccount,
+		target.ID,
+		strings.Join(relatedIDs, " "),
+	)
+}
+
+func memoryDuplicates(args []string) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{"--json": true})
+	fs := flag.NewFlagSet("memory duplicates", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "memory library / robot account name")
+	limit := fs.Int("limit", 20, "max duplicate groups to show")
+	minScore := fs.Int("min-score", memory.DefaultDuplicateMinScore, "minimum duplicate confidence score")
+	jsonOut := fs.Bool("json", false, "print raw JSON")
+	_ = fs.Parse(args)
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveMemoryAccount(strings.TrimSpace(*account))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	store := memory.NewLibraryStore(repo, resolvedAccount)
+	groups, err := store.FindDuplicateGroupsWithMinScore(*limit, *minScore)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if *jsonOut {
+		printJSONPayload(map[string]any{
+			"library":            sanitizePathSegment(resolvedAccount),
+			"limit":              *limit,
+			"min_score":          *minScore,
+			"duplicate_groups":   groups,
+			"duplicate_memories": countDuplicateDrops(groups),
+		})
+		return
+	}
+	if len(groups) == 0 {
+		fmt.Println("(no duplicate memories)")
+		return
+	}
+	fmt.Printf("duplicate_groups=%d duplicate_memories=%d min_score=%d\n", len(groups), countDuplicateDrops(groups), *minScore)
+	printMemoryDuplicateGroups(groups, resolvedAccount)
+}
+
+func memoryDedupe(args []string) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{
+		"--apply": true,
+		"--json":  true,
+	})
+	fs := flag.NewFlagSet("memory dedupe", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "memory library / robot account name")
+	limit := fs.Int("limit", 20, "max duplicate groups to inspect")
+	minScore := fs.Int("min-score", memory.DefaultDuplicateMinScore, "minimum duplicate confidence score")
+	apply := fs.Bool("apply", false, "apply merges instead of preview only")
+	jsonOut := fs.Bool("json", false, "print raw JSON")
+	_ = fs.Parse(args)
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveMemoryAccount(strings.TrimSpace(*account))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	store := memory.NewLibraryStore(repo, resolvedAccount)
+	groups, err := store.FindDuplicateGroupsWithMinScore(*limit, *minScore)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if !*apply && *jsonOut {
+		printJSONPayload(map[string]any{
+			"library":           sanitizePathSegment(resolvedAccount),
+			"dry_run":           true,
+			"limit":             *limit,
+			"min_score":         *minScore,
+			"duplicate_groups":  groups,
+			"delete_candidates": countDuplicateDrops(groups),
+		})
+		return
+	}
+	if len(groups) == 0 {
+		if *apply && *jsonOut {
+			printJSONPayload(map[string]any{
+				"library":       sanitizePathSegment(resolvedAccount),
+				"dry_run":       false,
+				"limit":         *limit,
+				"min_score":     *minScore,
+				"merged_groups": 0,
+				"deleted":       0,
+				"results":       []map[string]any{},
+			})
+			return
+		}
+		fmt.Println("(no duplicate memories)")
+		return
+	}
+	if !*apply {
+		fmt.Printf("dry_run=true groups=%d delete_candidates=%d min_score=%d\n", len(groups), countDuplicateDrops(groups), *minScore)
+		printMemoryDuplicateGroups(groups, resolvedAccount)
+		return
+	}
+	mergedCount := 0
+	deletedCount := 0
+	results := make([]map[string]any, 0, len(groups))
+	for i, group := range groups {
+		dropIDs := duplicateGroupDropIDs(group)
+		entry, deletedIDs, err := store.MergeEntries(group.Keep.ID, dropIDs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: merge group %d failed: %v\n", i+1, err)
+			os.Exit(1)
+		}
+		mergedCount++
+		deletedCount += len(deletedIDs)
+		results = append(results, map[string]any{
+			"group":       i + 1,
+			"source_keep": group.Keep.ID,
+			"deleted_ids": deletedIDs,
+			"entry":       entry,
+		})
+		if *jsonOut {
+			continue
+		}
+		fmt.Printf("merged_group=%d keep=%s deleted=%s kind=%s priority=%d pinned=%t use_count=%d reinforce_count=%d tags=%s text=%s\n",
+			i+1,
+			entry.ID,
+			strings.Join(deletedIDs, ","),
+			emptyFallback(entry.Kind, "(none)"),
+			entry.Priority,
+			entry.Pinned,
+			entry.UseCount,
+			entry.ReinforceCount,
+			emptyFallback(strings.Join(entry.Tags, ","), "(none)"),
+			compactSingleLine(entry.Text, 120),
+		)
+	}
+	if *jsonOut {
+		printJSONPayload(map[string]any{
+			"library":       sanitizePathSegment(resolvedAccount),
+			"dry_run":       false,
+			"limit":         *limit,
+			"min_score":     *minScore,
+			"merged_groups": mergedCount,
+			"deleted":       deletedCount,
+			"results":       results,
+		})
+		return
+	}
+	fmt.Printf("dedupe=ok library=%s groups=%d deleted=%d min_score=%d\n", sanitizePathSegment(resolvedAccount), mergedCount, deletedCount, *minScore)
+}
+
+func printMemoryDuplicateGroups(groups []memory.DuplicateGroup, account string) {
+	for i, group := range groups {
+		dropIDs := duplicateGroupDropIDs(group)
+		fmt.Printf("group=%d score=%d keep=%s drops=%s\n", i+1, group.Score, group.Keep.ID, strings.Join(dropIDs, ","))
+		fmt.Println("  " + memorySummaryLine(group.Keep))
+		for _, match := range group.Drops {
+			fmt.Printf("  match_score=%d reason=%s\n", match.Score, emptyFallback(match.Reason, "(unknown)"))
+			fmt.Println("  " + memorySummaryLine(match.Entry))
+		}
+		fmt.Printf("  suggest=suncodexclawd memory merge --account %q %s %s\n",
+			account,
+			group.Keep.ID,
+			strings.Join(dropIDs, " "),
+		)
+	}
+}
+
+func duplicateGroupDropIDs(group memory.DuplicateGroup) []string {
+	ids := make([]string, 0, len(group.Drops))
+	for _, match := range group.Drops {
+		ids = append(ids, match.Entry.ID)
+	}
+	return ids
+}
+
+func countDuplicateDrops(groups []memory.DuplicateGroup) int {
+	total := 0
+	for _, group := range groups {
+		total += len(group.Drops)
+	}
+	return total
+}
+
+func ternaryFlag(enabled bool, whenTrue, whenFalse string) string {
+	if enabled {
+		return whenTrue
+	}
+	return whenFalse
+}
+
+func memoryDelete(args []string) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{"--json": true})
+	fs := flag.NewFlagSet("memory delete", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "memory library / robot account name")
+	jsonOut := fs.Bool("json", false, "print raw JSON")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		memoryUsage()
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveMemoryAccount(strings.TrimSpace(*account))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	store := memory.NewLibraryStore(repo, resolvedAccount)
+	var deletedEntry *memory.Entry
+	if *jsonOut {
+		entry, err := store.ReadEntry(fs.Arg(0))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		deletedEntry = &entry
+	}
 	if err := store.DeleteEntry(fs.Arg(0)); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+	if *jsonOut {
+		printJSONPayload(map[string]any{
+			"library":    sanitizePathSegment(resolvedAccount),
+			"action":     "deleted",
+			"deleted_id": fs.Arg(0),
+			"entry":      deletedEntry,
+		})
+		return
+	}
 	fmt.Printf("deleted=%s\n", fs.Arg(0))
+}
+
+func memoryArchive(args []string, archived bool) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{"--json": true})
+	commandName := "memory archive"
+	if !archived {
+		commandName = "memory unarchive"
+	}
+	fs := flag.NewFlagSet(commandName, flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "memory library / robot account name")
+	jsonOut := fs.Bool("json", false, "print raw JSON")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		memoryUsage()
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveMemoryAccount(strings.TrimSpace(*account))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	now := ""
+	if archived {
+		now = time.Now().UTC().Format(time.RFC3339)
+	}
+	store := memory.NewLibraryStore(repo, resolvedAccount)
+	entry, err := store.UpdateEntry(fs.Arg(0), memory.UpdateOptions{
+		Archived:   boolPtr(archived),
+		ArchivedAt: stringPtr(now),
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	action := "unarchived"
+	if archived {
+		action = "archived"
+	}
+	if *jsonOut {
+		printJSONPayload(map[string]any{
+			"library": sanitizePathSegment(resolvedAccount),
+			"action":  action,
+			"entry":   entry,
+		})
+		return
+	}
+	fmt.Printf("library=%s %s=%s archived=%t archived_at=%s text=%s\n",
+		sanitizePathSegment(resolvedAccount),
+		action,
+		entry.ID,
+		entry.Archived,
+		emptyFallback(strings.TrimSpace(entry.ArchivedAt), "(none)"),
+		compactSingleLine(entry.Text, 120),
+	)
+}
+
+func memoryPurge(args []string) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{"--json": true})
+	fs := flag.NewFlagSet("memory purge", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "memory library / robot account name")
+	days := fs.Int("days", 30, "only purge archived memories older than this many days")
+	limit := fs.Int("limit", 20, "max archived memories to inspect")
+	apply := fs.Bool("apply", false, "physically delete matched archived memories")
+	jsonOut := fs.Bool("json", false, "print raw JSON")
+	_ = fs.Parse(args)
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveMemoryAccount(strings.TrimSpace(*account))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	store := memory.NewLibraryStore(repo, resolvedAccount)
+	candidates, err := store.FindArchivedPurgeCandidates(*limit, *days)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if !*apply {
+		if *jsonOut {
+			printJSONPayload(map[string]any{
+				"library":          sanitizePathSegment(resolvedAccount),
+				"dry_run":          true,
+				"days":             *days,
+				"limit":            *limit,
+				"purge_candidates": candidates,
+			})
+			return
+		}
+		fmt.Printf("dry_run=true library=%s purge_candidates=%d days=%d\n", sanitizePathSegment(resolvedAccount), len(candidates), *days)
+		if len(candidates) == 0 {
+			fmt.Println("(no archived purge candidates)")
+			return
+		}
+		for i, candidate := range candidates {
+			fmt.Printf("purge=%d age_days=%d archived_at=%s\n", i+1, candidate.AgeDays, emptyFallback(candidate.ArchivedAt, "(unknown)"))
+			fmt.Println("  " + memorySummaryLine(candidate.Entry))
+			fmt.Printf("  suggest=suncodexclawd memory purge --account %q --days %d --apply\n", resolvedAccount, *days)
+		}
+		return
+	}
+	deleted, err := store.PurgeArchivedCandidates(candidates)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if *jsonOut {
+		printJSONPayload(map[string]any{
+			"library": sanitizePathSegment(resolvedAccount),
+			"dry_run": false,
+			"days":    *days,
+			"limit":   *limit,
+			"deleted": deleted,
+		})
+		return
+	}
+	fmt.Printf("purged=%d library=%s days=%d deleted=%s\n",
+		len(deleted),
+		sanitizePathSegment(resolvedAccount),
+		*days,
+		emptyFallback(strings.Join(deleted, ","), "(none)"),
+	)
+}
+
+func memoryMerge(args []string) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{"--json": true})
+	fs := flag.NewFlagSet("memory merge", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "memory library / robot account name")
+	jsonOut := fs.Bool("json", false, "print raw JSON")
+	_ = fs.Parse(args)
+	if fs.NArg() < 2 {
+		memoryUsage()
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveMemoryAccount(strings.TrimSpace(*account))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	store := memory.NewLibraryStore(repo, resolvedAccount)
+	entry, deletedIDs, err := store.MergeEntries(fs.Arg(0), fs.Args()[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if *jsonOut {
+		printJSONPayload(map[string]any{
+			"library":     sanitizePathSegment(resolvedAccount),
+			"action":      "merged",
+			"deleted_ids": deletedIDs,
+			"entry":       entry,
+		})
+		return
+	}
+	fmt.Printf("library=%s merged_into=%s deleted=%s kind=%s priority=%d pinned=%t use_count=%d reinforce_count=%d tags=%s text=%s\n",
+		sanitizePathSegment(resolvedAccount),
+		entry.ID,
+		strings.Join(deletedIDs, ","),
+		emptyFallback(entry.Kind, "(none)"),
+		entry.Priority,
+		entry.Pinned,
+		entry.UseCount,
+		entry.ReinforceCount,
+		emptyFallback(strings.Join(entry.Tags, ","), "(none)"),
+		compactSingleLine(entry.Text, 120),
+	)
+}
+
+func memoryUpdate(args []string) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{
+		"--clear-source": true,
+		"--clear-tags":   true,
+		"--clear-kind":   true,
+		"--pinned":       true,
+		"--unpinned":     true,
+		"--json":         true,
+	})
+	fs := flag.NewFlagSet("memory update", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "memory library / robot account name")
+	text := fs.String("text", "", "memory text")
+	textFile := fs.String("text-file", "", "memory text file")
+	source := fs.String("source", "", "memory source label")
+	clearSource := fs.Bool("clear-source", false, "clear memory source")
+	kind := fs.String("kind", "", "memory kind: preference|rule|note")
+	clearKind := fs.Bool("clear-kind", false, "clear memory kind")
+	priority := fs.Int("priority", -1, "memory priority 0-100")
+	pinned := fs.Bool("pinned", false, "pin this memory")
+	unpinned := fs.Bool("unpinned", false, "unpin this memory")
+	jsonOut := fs.Bool("json", false, "print raw JSON")
+	clearTags := fs.Bool("clear-tags", false, "clear memory tags")
+	var tags multiFlag
+	fs.Var(&tags, "tag", "memory tag (repeatable)")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		memoryUsage()
+		os.Exit(2)
+	}
+	if *pinned && *unpinned {
+		fmt.Fprintln(os.Stderr, "error: --pinned and --unpinned cannot be used together")
+		os.Exit(2)
+	}
+
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveMemoryAccount(strings.TrimSpace(*account))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+
+	var opts memory.UpdateOptions
+	changed := false
+
+	memoryText := strings.TrimSpace(*text)
+	if strings.TrimSpace(*textFile) != "" {
+		b, err := os.ReadFile(*textFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		memoryText = strings.TrimSpace(string(b))
+	}
+	if findPresentFlag(args, "--text", "--text-file") != "" {
+		opts.Text = stringPtr(memoryText)
+		changed = true
+	}
+	if *clearSource {
+		opts.Source = stringPtr("")
+		changed = true
+	} else if findPresentFlag(args, "--source") != "" {
+		opts.Source = stringPtr(strings.TrimSpace(*source))
+		changed = true
+	}
+	if *clearTags {
+		opts.Tags = stringSlicePtr([]string{})
+		changed = true
+	} else if findPresentFlag(args, "--tag") != "" {
+		tagValues := []string(tags)
+		opts.Tags = stringSlicePtr(tagValues)
+		changed = true
+	}
+	if *clearKind {
+		opts.Kind = stringPtr("")
+		changed = true
+	} else if findPresentFlag(args, "--kind") != "" {
+		opts.Kind = stringPtr(strings.TrimSpace(*kind))
+		changed = true
+	}
+	if findPresentFlag(args, "--priority") != "" {
+		if *priority < 0 || *priority > 100 {
+			fmt.Fprintln(os.Stderr, "error: priority must be between 0 and 100")
+			os.Exit(2)
+		}
+		opts.Priority = intPtr(*priority)
+		changed = true
+	}
+	if *pinned {
+		opts.Pinned = boolPtr(true)
+		changed = true
+	}
+	if *unpinned {
+		opts.Pinned = boolPtr(false)
+		changed = true
+	}
+	if !changed {
+		fmt.Fprintln(os.Stderr, "error: no memory changes were provided")
+		os.Exit(2)
+	}
+
+	store := memory.NewLibraryStore(repo, resolvedAccount)
+	entry, err := store.UpdateEntry(fs.Arg(0), opts)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if *jsonOut {
+		printJSONPayload(map[string]any{
+			"library": sanitizePathSegment(resolvedAccount),
+			"action":  "updated",
+			"entry":   entry,
+		})
+		return
+	}
+	fmt.Printf("library=%s updated=%s source=%s kind=%s priority=%d pinned=%t tags=%s text=%s\n",
+		sanitizePathSegment(resolvedAccount),
+		entry.ID,
+		emptyFallback(entry.Source, "(none)"),
+		emptyFallback(entry.Kind, "(none)"),
+		entry.Priority,
+		entry.Pinned,
+		emptyFallback(strings.Join(entry.Tags, ","), "(none)"),
+		compactSingleLine(entry.Text, 120),
+	)
+}
+
+func memoryPin(args []string, pinned bool) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{"--json": true})
+	fs := flag.NewFlagSet("memory pin", flag.ExitOnError)
+	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
+	account := fs.String("account", "", "memory library / robot account name")
+	jsonOut := fs.Bool("json", false, "print raw JSON")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		memoryUsage()
+		os.Exit(2)
+	}
+	repo := resolveRepoRoot(*repoFlag)
+	resolvedAccount, err := resolveMemoryAccount(strings.TrimSpace(*account))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	store := memory.NewLibraryStore(repo, resolvedAccount)
+	entry, err := store.UpdateEntry(fs.Arg(0), memory.UpdateOptions{Pinned: boolPtr(pinned)})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	action := "unpinned"
+	if pinned {
+		action = "pinned"
+	}
+	if *jsonOut {
+		printJSONPayload(map[string]any{
+			"library": sanitizePathSegment(resolvedAccount),
+			"action":  action,
+			"entry":   entry,
+		})
+		return
+	}
+	fmt.Printf("library=%s %s=%s priority=%d kind=%s text=%s\n",
+		sanitizePathSegment(resolvedAccount),
+		action,
+		entry.ID,
+		entry.Priority,
+		emptyFallback(entry.Kind, "(none)"),
+		compactSingleLine(entry.Text, 120),
+	)
 }
 
 func envSet(args []string) {
@@ -3138,24 +4153,23 @@ func appendEnvOverride(env []string, key, value string) []string {
 
 func printClawHubPayload(payload map[string]any, jsonOut bool, fallbackText string) {
 	if jsonOut {
-		body, err := json.MarshalIndent(payload, "", "  ")
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
-		}
-		fmt.Println(string(body))
+		printJSONPayload(payload)
 		return
 	}
 	if strings.TrimSpace(fallbackText) == "" {
-		body, err := json.MarshalIndent(payload, "", "  ")
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
-		}
-		fmt.Println(string(body))
+		printJSONPayload(payload)
 		return
 	}
 	fmt.Println(fallbackText)
+}
+
+func printJSONPayload(payload any) {
+	body, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(body))
 }
 
 func formatClawHubSearchPayload(payload map[string]any) string {
@@ -3435,15 +4449,63 @@ func compactSingleLine(value string, max int) string {
 	return text[:max-3] + "..."
 }
 
+func stringPtr(value string) *string {
+	return &value
+}
+
+func stringSlicePtr(value []string) *[]string {
+	return &value
+}
+
+func intPtr(value int) *int {
+	return &value
+}
+
+func boolPtr(value bool) *bool {
+	return &value
+}
+
 func memorySummaryLine(entry memory.Entry) string {
 	return fmt.Sprintf(
-		"%s updated=%s source=%s tags=%s text=%s",
+		"%s updated=%s source=%s kind=%s priority=%d pinned=%t archived=%t use_count=%d reinforce_count=%d tags=%s text=%s",
 		entry.ID,
 		emptyFallback(strings.TrimSpace(entry.UpdatedAt), emptyFallback(strings.TrimSpace(entry.CreatedAt), "(unknown)")),
 		emptyFallback(entry.Source, "(none)"),
+		emptyFallback(entry.Kind, "(none)"),
+		entry.Priority,
+		entry.Pinned,
+		entry.Archived,
+		entry.UseCount,
+		entry.ReinforceCount,
 		emptyFallback(strings.Join(entry.Tags, ","), "(none)"),
 		compactSingleLine(entry.Text, 120),
 	)
+}
+
+func formatMemoryKindCounts(counts map[string]int) string {
+	if len(counts) == 0 {
+		return "(none)"
+	}
+	parts := make([]string, 0, len(counts))
+	for _, kind := range []string{"preference", "rule", "note", "unknown"} {
+		if counts[kind] <= 0 {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s:%d", kind, counts[kind]))
+	}
+	return emptyFallback(strings.Join(parts, ","), "(none)")
+}
+
+func printMemoryEntrySection(title string, entries []memory.Entry, labelFn func(memory.Entry) string) {
+	fmt.Println(title)
+	if len(entries) == 0 {
+		fmt.Println("  (none)")
+		return
+	}
+	for i, entry := range entries {
+		fmt.Printf("  rank=%d %s\n", i+1, emptyFallback(labelFn(entry), "(none)"))
+		fmt.Println("  " + memorySummaryLine(entry))
+	}
 }
 
 func launchagents(args []string) {

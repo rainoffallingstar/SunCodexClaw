@@ -15,6 +15,8 @@ import (
 	larkdispatcher "github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
+
+	"suncodexclaw/internal/memory"
 )
 
 type RunOptions struct {
@@ -47,6 +49,24 @@ type referencedMessage struct {
 	LocalPath   string
 	ImagePaths  []string
 }
+
+type autoMemoryCandidate struct {
+	Text     string
+	Tags     []string
+	Kind     string
+	Priority int
+	Pinned   bool
+}
+
+type autoMemoryAction string
+
+const (
+	autoMemoryActionNone       autoMemoryAction = ""
+	autoMemoryActionAdded      autoMemoryAction = "added"
+	autoMemoryActionReinforced autoMemoryAction = "reinforced"
+)
+
+const autoMemoryDuplicateMinScore = 100
 
 func Run(ctx context.Context, opts RunOptions) error {
 	if opts.Stdout == nil {
@@ -557,6 +577,7 @@ func handleMessageEvent(ctx context.Context, client *lark.Client, cfg Config, en
 		fmt.Println("skip_reason=empty_text_after_strip")
 		return nil
 	}
+	autoMemoryInput := strings.TrimSpace(userText)
 	parentMessageID := strings.TrimSpace(deref(message.ParentId))
 	if parentMessageID != "" {
 		referenced, refCleanupDirs, refErr := fetchReferencedMessageTextFunc(ctx, client, message, cfg)
@@ -594,6 +615,7 @@ func handleMessageEvent(ctx context.Context, client *lark.Client, cfg Config, en
 	var reply string
 	var codexReply CodexReply
 	var history []historyEntry
+	var relevantMemories []memory.Entry
 	var threadName string
 	var activeThreadID string
 	var activeCodexThreadID string
@@ -624,12 +646,25 @@ func handleMessageEvent(ctx context.Context, client *lark.Client, cfg Config, en
 				return nil
 			}
 		}
+		relevantMatches, matchErr := loadRelevantMemoryMatches(cfg, historyUserText)
+		if matchErr != nil {
+			err = matchErr
+		} else {
+			relevantMemories = recallEntries(relevantMatches)
+		}
+		if err != nil {
+			fmt.Printf("[warn] memory_auto_search ignored: account=%s query=%s message=%s\n", cfg.AccountName, compactText(historyUserText, 120), compactText(err.Error(), 300))
+			relevantMemories = nil
+		} else if len(relevantMemories) > 0 {
+			fmt.Printf("memory_auto_search=ok account=%s hits=%d query=%s\n", cfg.AccountName, len(relevantMemories), compactText(historyUserText, 120))
+			logRelevantMemoryMatches(relevantMatches)
+		}
 		codexThreadTitle := buildCodexThreadTitle(cfg, threadName, historyUserText)
-		freshPrompt := buildPrompt(cfg, chatID, userText, codexThreadTitle, history)
+		freshPrompt := buildPrompt(cfg, chatID, userText, codexThreadTitle, history, relevantMemories)
 		codexPrompt := freshPrompt
 		fallbackPrompt := ""
 		if strings.TrimSpace(activeCodexThreadID) != "" {
-			codexPrompt = buildResumePrompt(cfg, chatID, userText, len(imagePaths))
+			codexPrompt = buildResumePrompt(cfg, chatID, userText, len(imagePaths), relevantMemories)
 			fallbackPrompt = freshPrompt
 		}
 		codexReply, err = runCodexFunc(ctx, cfg.Codex, CodexRunRequest{
@@ -685,6 +720,9 @@ func handleMessageEvent(ctx context.Context, client *lark.Client, cfg Config, en
 		}
 		return sendErr
 	}
+	if err := markRelevantMemoriesUsed(cfg, relevantMemories); err != nil {
+		fmt.Printf("[warn] memory_mark_used ignored: account=%s message=%s\n", cfg.AccountName, compactText(err.Error(), 300))
+	}
 	finishProgressReporter(ctx, progress, "执行完成，回复见下条消息。", reply)
 	chatState.mu.Lock()
 	if currentThread := chatState.Threads[activeThreadID]; currentThread != nil {
@@ -692,6 +730,13 @@ func handleMessageEvent(ctx context.Context, client *lark.Client, cfg Config, en
 		appendHistory(currentThread, "assistant", reply, cfg.Codex.HistoryTurns)
 	}
 	chatState.mu.Unlock()
+	if entry, action, err := maybeAutoRememberUserMessage(cfg, chatID, autoMemoryInput); err != nil {
+		fmt.Printf("[warn] memory_auto_add ignored: account=%s message=%s\n", cfg.AccountName, compactText(err.Error(), 300))
+	} else if action == autoMemoryActionAdded {
+		fmt.Printf("memory_auto_add=ok account=%s id=%s priority=%d pinned=%t tags=%s\n", cfg.AccountName, entry.ID, entry.Priority, entry.Pinned, emptyFallback(strings.Join(entry.Tags, ","), "(none)"))
+	} else if action == autoMemoryActionReinforced {
+		fmt.Printf("memory_auto_reinforce=ok account=%s id=%s priority=%d pinned=%t tags=%s\n", cfg.AccountName, entry.ID, entry.Priority, entry.Pinned, emptyFallback(strings.Join(entry.Tags, ","), "(none)"))
+	}
 	fmt.Printf("reply=ok mode=%s thread=%s\n", cfg.ReplyMode, activeThreadID)
 	return nil
 }
@@ -752,9 +797,15 @@ func runTimerTask(ctx context.Context, client *lark.Client, cfg Config, taskFile
 	fmt.Fprintf(w, "timer_task_chat_id=%s\n", task.ChatID)
 	fmt.Fprintf(w, "timer_task_cwd=%s\n", emptyFallback(timerCodex.Cwd, optsFallbackCwd()))
 	progress := startProgressReporter(ctx, client, task.ChatID, cfg, task.Prompt)
+	relevantMatches := mustLoadRelevantMemoryMatches(cfg, task.Prompt)
+	relevantMemories := recallEntries(relevantMatches)
+	if len(relevantMemories) > 0 {
+		fmt.Fprintf(w, "timer_memory_auto_search=ok account=%s hits=%d query=%s\n", cfg.AccountName, len(relevantMemories), compactText(task.Prompt, 120))
+		writeRelevantMemoryMatches(w, relevantMatches)
+	}
 
 	codexReply, err := runCodexFunc(ctx, timerCodex, CodexRunRequest{
-		Prompt: buildPrompt(cfg, task.ChatID, task.Prompt, "定时任务 | "+task.ID, nil),
+		Prompt: buildPrompt(cfg, task.ChatID, task.Prompt, "定时任务 | "+task.ID, nil, relevantMemories),
 		OnEvent: func(event codexProgressEvent) {
 			if progress != nil {
 				progress.recordEvent(ctx, event)
@@ -776,6 +827,9 @@ func runTimerTask(ctx context.Context, client *lark.Client, cfg Config, taskFile
 			progress.fail(ctx, "定时任务执行失败："+err.Error())
 		}
 		return err
+	}
+	if err := markRelevantMemoriesUsed(cfg, relevantMemories); err != nil {
+		fmt.Fprintf(w, "[warn] memory_mark_used ignored: account=%s message=%s\n", cfg.AccountName, compactText(err.Error(), 300))
 	}
 	finishProgressReporter(ctx, progress, "定时任务执行完成，结果见下条消息。", reply)
 	fmt.Fprintf(w, "TIMER_TASK_OK id=%s\n", task.ID)
@@ -1223,6 +1277,380 @@ func optsFallbackCwd() string {
 		return "."
 	}
 	return cwd
+}
+
+func loadRelevantMemories(cfg Config, query string) ([]memory.Entry, error) {
+	matches, err := loadRelevantMemoryMatches(cfg, query)
+	if err != nil {
+		return nil, err
+	}
+	return recallEntries(matches), nil
+}
+
+func loadRelevantMemoryMatches(cfg Config, query string) ([]memory.RecallMatch, error) {
+	account := strings.TrimSpace(cfg.AccountName)
+	if account == "" {
+		return nil, fmt.Errorf("missing account name for memory lookup")
+	}
+	searchQuery := memorySearchQuery(query)
+	if searchQuery == "" {
+		return nil, nil
+	}
+	store := memory.NewLibraryStore(cfg.RepoRoot, account)
+	return store.FindRecallMatches(searchQuery, 4)
+}
+
+func mustLoadRelevantMemories(cfg Config, query string) []memory.Entry {
+	matches := mustLoadRelevantMemoryMatches(cfg, query)
+	return recallEntries(matches)
+}
+
+func mustLoadRelevantMemoryMatches(cfg Config, query string) []memory.RecallMatch {
+	matches, err := loadRelevantMemoryMatches(cfg, query)
+	if err != nil {
+		fmt.Printf("[warn] memory_auto_search ignored: account=%s query=%s message=%s\n", cfg.AccountName, compactText(query, 120), compactText(err.Error(), 300))
+		return nil
+	}
+	return matches
+}
+
+func recallEntries(matches []memory.RecallMatch) []memory.Entry {
+	entries := make([]memory.Entry, 0, len(matches))
+	for _, match := range matches {
+		entries = append(entries, match.Entry)
+	}
+	return entries
+}
+
+func logRelevantMemoryMatches(matches []memory.RecallMatch) {
+	writeRelevantMemoryMatches(os.Stdout, matches)
+}
+
+func writeRelevantMemoryMatches(w io.Writer, matches []memory.RecallMatch) {
+	for i, match := range matches {
+		fmt.Fprintf(w, "memory_auto_search_hit=%d id=%s score=%d reasons=%s\n",
+			i+1,
+			emptyFallback(strings.TrimSpace(match.Entry.ID), "(no-id)"),
+			match.Score,
+			emptyFallback(strings.Join(match.Reasons, ","), "(none)"),
+		)
+	}
+}
+
+func markRelevantMemoriesUsed(cfg Config, entries []memory.Entry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	account := strings.TrimSpace(cfg.AccountName)
+	if account == "" {
+		return fmt.Errorf("missing account name for memory usage update")
+	}
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.ID) == "" {
+			continue
+		}
+		ids = append(ids, entry.ID)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	store := memory.NewLibraryStore(cfg.RepoRoot, account)
+	return store.MarkUsed(ids)
+}
+
+func memorySearchQuery(raw string) string {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(
+		"<referenced_message>", " ",
+		"</referenced_message>", " ",
+		"<current_message>", " ",
+		"</current_message>", " ",
+		"message_id:", " ",
+		"message_type:", " ",
+		"local_path:", " ",
+		"image_paths:", " ",
+		"content:", " ",
+	)
+	text = replacer.Replace(text)
+	text = strings.Join(strings.Fields(text), " ")
+	return compactText(text, 240)
+}
+
+func memorySearchTerms(query string) []string {
+	seen := map[string]bool{}
+	terms := []string{}
+	add := func(term string) {
+		term = strings.TrimSpace(term)
+		if len([]rune(term)) < 2 || seen[term] {
+			return
+		}
+		seen[term] = true
+		terms = append(terms, term)
+	}
+	for _, field := range strings.Fields(strings.ToLower(strings.TrimSpace(query))) {
+		add(field)
+	}
+	runes := []rune(strings.ToLower(strings.TrimSpace(query)))
+	for i := 0; i+1 < len(runes); i++ {
+		pair := strings.TrimSpace(string(runes[i : i+2]))
+		if strings.Contains(pair, "<") || strings.Contains(pair, ">") {
+			continue
+		}
+		add(pair)
+	}
+	return terms
+}
+
+func maybeAutoRememberUserMessage(cfg Config, chatID, text string) (memory.Entry, autoMemoryAction, error) {
+	candidate := extractAutoMemoryCandidate(text)
+	if candidate == nil {
+		return memory.Entry{}, autoMemoryActionNone, nil
+	}
+	store := memory.NewLibraryStore(cfg.RepoRoot, cfg.AccountName)
+	sourceParts := []string{"feishu-auto", cfg.AccountName}
+	if strings.TrimSpace(chatID) != "" {
+		sourceParts = append(sourceParts, chatID)
+	}
+	sourceLabel := strings.Join(sourceParts, "/")
+	match, ok, err := store.FindBestDuplicateMatch(memory.Entry{
+		Text: candidate.Text,
+		Kind: candidate.Kind,
+	}, memory.QueryOptions{IncludeArchived: true}, autoMemoryDuplicateMinScore)
+	if err != nil {
+		return memory.Entry{}, autoMemoryActionNone, err
+	}
+	if ok {
+		updated, changed, err := reinforceAutoMemoryEntry(store, match.Entry, candidate, sourceLabel)
+		if err != nil {
+			return memory.Entry{}, autoMemoryActionNone, err
+		}
+		if !changed {
+			return updated, autoMemoryActionNone, nil
+		}
+		return updated, autoMemoryActionReinforced, nil
+	}
+	entry, err := store.AddWithOptions(candidate.Text, memory.AddOptions{
+		Source:   sourceLabel,
+		Tags:     candidate.Tags,
+		Kind:     candidate.Kind,
+		Priority: candidate.Priority,
+		Pinned:   candidate.Pinned,
+	})
+	if err != nil {
+		return memory.Entry{}, autoMemoryActionNone, err
+	}
+	return entry, autoMemoryActionAdded, nil
+}
+
+func reinforceAutoMemoryEntry(store *memory.Store, entry memory.Entry, candidate *autoMemoryCandidate, source string) (memory.Entry, bool, error) {
+	if candidate == nil {
+		return entry, false, nil
+	}
+	nextTags := normalizeStringTags(append(append([]string{}, entry.Tags...), candidate.Tags...))
+	nextKind := strongerMemoryKind(entry.Kind, candidate.Kind)
+	nextPriority := entry.Priority
+	if candidate.Priority > nextPriority {
+		nextPriority = candidate.Priority
+	}
+	if nextPriority < 100 {
+		nextPriority += 5
+		if nextPriority > 100 {
+			nextPriority = 100
+		}
+	}
+	nextPinned := entry.Pinned || candidate.Pinned
+	nextArchived := false
+	nextArchivedAt := ""
+	nextSource := strings.TrimSpace(entry.Source)
+	if nextSource == "" {
+		nextSource = strings.TrimSpace(source)
+	}
+	nextReinforceCount := entry.ReinforceCount + 1
+	nextLastReinforcedAt := time.Now().UTC().Format(time.RFC3339)
+	changed := !equalStringSlices(entry.Tags, nextTags) ||
+		!strings.EqualFold(strings.TrimSpace(entry.Kind), strings.TrimSpace(nextKind)) ||
+		entry.Priority != nextPriority ||
+		entry.Pinned != nextPinned ||
+		entry.Archived != nextArchived ||
+		strings.TrimSpace(entry.ArchivedAt) != nextArchivedAt ||
+		strings.TrimSpace(entry.Source) != nextSource ||
+		entry.ReinforceCount != nextReinforceCount ||
+		strings.TrimSpace(entry.LastReinforcedAt) != nextLastReinforcedAt
+	if !changed {
+		return entry, false, nil
+	}
+	updated, err := store.UpdateEntry(entry.ID, memory.UpdateOptions{
+		Source:           stringPtrIfChanged(strings.TrimSpace(entry.Source), nextSource),
+		Tags:             stringSlicePtrIfChanged(entry.Tags, nextTags),
+		Kind:             stringPtrIfChanged(strings.TrimSpace(entry.Kind), nextKind),
+		Priority:         intPtrIfChanged(entry.Priority, nextPriority),
+		Pinned:           boolPtrIfChanged(entry.Pinned, nextPinned),
+		Archived:         boolPtrIfChanged(entry.Archived, nextArchived),
+		ArchivedAt:       stringPtrIfChanged(strings.TrimSpace(entry.ArchivedAt), nextArchivedAt),
+		ReinforceCount:   intPtrIfChanged(entry.ReinforceCount, nextReinforceCount),
+		LastReinforcedAt: stringPtrIfChanged(strings.TrimSpace(entry.LastReinforcedAt), nextLastReinforcedAt),
+	})
+	if err != nil {
+		return memory.Entry{}, false, err
+	}
+	return updated, true, nil
+}
+
+func extractAutoMemoryCandidate(text string) *autoMemoryCandidate {
+	normalized := strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	if normalized == "" || len([]rune(normalized)) < 4 || len([]rune(normalized)) > 240 {
+		return nil
+	}
+	if strings.HasPrefix(normalized, "/") || looksSensitiveMemoryText(normalized) {
+		return nil
+	}
+	triggers := []string{
+		"请记住", "记住：", "记住 ", "记一下", "你要记住",
+		"以后默认", "今后默认", "默认用", "默认按", "默认请用",
+		"请始终", "统一用", "优先用",
+	}
+	matched := false
+	for _, trigger := range triggers {
+		if strings.Contains(normalized, trigger) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return nil
+	}
+	tags := []string{"auto"}
+	kind := "note"
+	priority := 40
+	pinned := false
+	switch {
+	case strings.Contains(normalized, "默认"), strings.Contains(normalized, "统一用"), strings.Contains(normalized, "优先用"):
+		tags = append(tags, "preference")
+		kind = "preference"
+		priority = 80
+		pinned = true
+	default:
+		tags = append(tags, "rule")
+		kind = "rule"
+		priority = 70
+	}
+	for _, pair := range []struct {
+		token string
+		tag   string
+	}{
+		{"中文", "language"},
+		{"简体", "language"},
+		{"英文", "language"},
+		{"测试", "workflow"},
+		{"docker", "runtime"},
+		{"compose", "runtime"},
+	} {
+		if strings.Contains(strings.ToLower(normalized), strings.ToLower(pair.token)) {
+			tags = append(tags, pair.tag)
+		}
+	}
+	return &autoMemoryCandidate{
+		Text:     normalized,
+		Tags:     normalizeStringTags(tags),
+		Kind:     kind,
+		Priority: priority,
+		Pinned:   pinned,
+	}
+}
+
+func looksSensitiveMemoryText(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	for _, token := range []string{
+		"api key", "apikey", "token", "secret", "password", "passwd", "cookie",
+		"密钥", "令牌", "密码", "口令", "凭证", "秘钥",
+		"sk-", "sess-", "bearer ",
+	} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeStringTags(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func strongerMemoryKind(current, candidate string) string {
+	kindScore := func(value string) int {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "preference":
+			return 3
+		case "rule":
+			return 2
+		case "note":
+			return 1
+		default:
+			return 0
+		}
+	}
+	if kindScore(candidate) > kindScore(current) {
+		return strings.TrimSpace(candidate)
+	}
+	return strings.TrimSpace(current)
+}
+
+func equalStringSlices(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if strings.TrimSpace(left[i]) != strings.TrimSpace(right[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func stringPtrIfChanged(current, next string) *string {
+	if current == next {
+		return nil
+	}
+	value := next
+	return &value
+}
+
+func stringSlicePtrIfChanged(current, next []string) *[]string {
+	if equalStringSlices(current, next) {
+		return nil
+	}
+	value := append([]string{}, next...)
+	return &value
+}
+
+func intPtrIfChanged(current, next int) *int {
+	if current == next {
+		return nil
+	}
+	value := next
+	return &value
+}
+
+func boolPtrIfChanged(current, next bool) *bool {
+	if current == next {
+		return nil
+	}
+	value := next
+	return &value
 }
 
 func buildCodexThreadTitle(cfg Config, localThreadName, userText string) string {

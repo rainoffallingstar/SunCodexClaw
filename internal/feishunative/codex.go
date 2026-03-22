@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"suncodexclaw/internal/memory"
 )
 
 func DetectBinary(bin string, versionArg string) (bool, string) {
@@ -67,10 +69,16 @@ var defaultTimerSystemGuide = strings.Join([]string{
 var defaultMemorySystemGuide = strings.Join([]string{
 	"记忆系统：如果用户提到 /memory、记住、保存偏好、回忆历史约定，优先使用 `suncodexclawd memory ...` 管理内置 memory 系统。",
 	"当前机器人的记忆默认写入独立记忆库，适合同一套服务运行多个机器人账号。",
+	"如果用户不确定 memory 命令格式，可提示先看飞书里的 `/memory help`。",
+	"运行 Codex 前会自动检索相关长期记忆注入上下文；高价值长期规则可通过 `memory pin` 或 `memory update --priority/--kind` 主动提高命中概率。",
+	"如果用户再次强调同一条或近似表达的长期偏好或规则，系统会在避免重复写入的同时累积强化次数，并温和提高它的权重。",
+	"手动执行 `memory add` 时，如果命中高置信度重复，系统也会优先强化已有记忆，而不是继续创建近似重复条目。",
+	"如果用户明确要求保留新的近似重复记忆，可使用命令行 `memory add --force-new` 或 `memory force`；在飞书里可使用 `/memory add --force-new ...` 或 `/memory force ...`。",
+	"如果用户要删除一条错误或低价值记忆，命令行优先使用 `memory delete <id>`；飞书里可使用 `/memory delete <id>` 或 `/memory remove <id>`。",
 	"需要填写 `--account` 时，优先使用当前提示里明确给出的“当前机器人账号”；多机器人场景下，以当前加载的 `config/feishu/bots.toml` 中对应机器人表和启动参数 `--account <account>` 为准；如果账号名里有点号或空格，手工编辑 TOML 时记得给表名加引号。",
-	"添加记忆使用 `suncodexclawd memory add --account <当前机器人账号> --text \"...\"`，检索使用 `suncodexclawd memory search <关键词> --account <当前机器人账号>`。",
+	"添加记忆使用 `suncodexclawd memory add --account <当前机器人账号> --text \"...\"`，检索使用 `suncodexclawd memory search <关键词> --account <当前机器人账号>`，总览使用 `suncodexclawd memory stats --account <当前机器人账号>`，召回预览使用 `suncodexclawd memory recall <关键词> --account <当前机器人账号>`，治理体检使用 `suncodexclawd memory review --account <当前机器人账号>`，确认规则稳定后可用 `memory review --apply-promote|--apply-stale|--apply-all` 批量执行建议；点查某条记忆附近候选使用 `suncodexclawd memory related <id> --account <当前机器人账号>`，更新权重使用 `suncodexclawd memory update <id> --priority 80 --kind preference --pinned`，低价值旧记忆优先用 `suncodexclawd memory archive <id>` 暂时下线，需要时再 `unarchive`，长期归档后再用 `suncodexclawd memory purge --days 30` 预览、确认后 `--apply` 物理清理；历史重复条目可先用 `suncodexclawd memory duplicates` 查看，再用 `suncodexclawd memory merge <keep-id> <drop-id>...` 或 `suncodexclawd memory dedupe --apply` 收敛。",
 	"如果当前命令运行在机器人工作目录里，也可以直接执行 `suncodexclawd memory list|search ...`，账号会从 `.config.toml` 自动识别。",
-	"先用 `suncodexclawd memory search <关键词> --account <当前机器人账号>` 或 `suncodexclawd memory list --account <当前机器人账号>` 查看已有记忆，避免重复写入。",
+	"优先先用 `suncodexclawd memory search <关键词> --account <当前机器人账号>` 或 `suncodexclawd memory list --account <当前机器人账号>` 查看已有记忆；即使直接 add，系统也会保守处理高置信度重复。",
 	"如果用户要求“记住这件事”，优先把明确、长期有效的偏好或规则写进 memory。",
 }, "\n")
 
@@ -344,7 +352,7 @@ func readPipeLines(r io.Reader, onLine func(line string)) {
 	}
 }
 
-func buildPrompt(cfg Config, chatID, userText, title string, history []historyEntry) string {
+func buildPrompt(cfg Config, chatID, userText, title string, history []historyEntry, memories []memory.Entry) string {
 	lines := []string{}
 	if strings.TrimSpace(title) != "" {
 		lines = append(lines, strings.TrimSpace(title), "")
@@ -365,6 +373,11 @@ func buildPrompt(cfg Config, chatID, userText, title string, history []historyEn
 		"当前机器人账号："+cfg.AccountName,
 		"当前聊天 chat_id："+emptyFallback(chatID, "(unknown)"),
 		"当前工作目录："+emptyFallback(cfg.Codex.Cwd, emptyFallback(cfg.RepoRoot, ".")),
+		"",
+		"相关长期记忆：",
+	)
+	lines = append(lines, renderPromptMemories(memories)...)
+	lines = append(lines,
 		"",
 		"对话上下文（按时间顺序，可能为空）：",
 	)
@@ -397,7 +410,7 @@ func buildPrompt(cfg Config, chatID, userText, title string, history []historyEn
 	return strings.Join(lines, "\n")
 }
 
-func buildResumePrompt(cfg Config, chatID, userText string, imageCount int) string {
+func buildResumePrompt(cfg Config, chatID, userText string, imageCount int, memories []memory.Entry) string {
 	lines := []string{
 		"继续当前线程。下面是用户最新消息，请直接回复用户。",
 		"",
@@ -414,9 +427,14 @@ func buildResumePrompt(cfg Config, chatID, userText string, imageCount int) stri
 		"当前机器人账号：" + cfg.AccountName,
 		"当前聊天 chat_id：" + emptyFallback(chatID, "(unknown)"),
 		"",
+		"相关长期记忆：",
+	}
+	lines = append(lines, renderPromptMemories(memories)...)
+	lines = append(lines,
+		"",
 		"用户最新消息：",
 		strings.TrimSpace(userText),
-	}
+	)
 	if imageCount > 0 {
 		lines = append(lines, fmt.Sprintf("附加图片：%d 张（请结合图片内容回答）。", imageCount))
 	}
@@ -430,6 +448,40 @@ func buildResumePrompt(cfg Config, chatID, userText string, imageCount int) stri
 		"可以输出多行附件指令；除这些指令外，其他文字都会作为正常回复发送给用户。",
 	)
 	return strings.Join(lines, "\n")
+}
+
+func renderPromptMemories(memories []memory.Entry) []string {
+	if len(memories) == 0 {
+		return []string{"(无)"}
+	}
+	lines := make([]string, 0, len(memories)*2)
+	for _, item := range memories {
+		header := []string{"- " + emptyFallback(strings.TrimSpace(item.ID), "(no-id)")}
+		if strings.TrimSpace(item.Kind) != "" {
+			header = append(header, "kind="+strings.TrimSpace(item.Kind))
+		}
+		if item.Priority > 0 {
+			header = append(header, fmt.Sprintf("priority=%d", item.Priority))
+		}
+		if item.Pinned {
+			header = append(header, "pinned=true")
+		}
+		if item.UseCount > 0 {
+			header = append(header, fmt.Sprintf("use_count=%d", item.UseCount))
+		}
+		if item.ReinforceCount > 0 {
+			header = append(header, fmt.Sprintf("reinforce_count=%d", item.ReinforceCount))
+		}
+		if strings.TrimSpace(item.Source) != "" {
+			header = append(header, "source="+strings.TrimSpace(item.Source))
+		}
+		if len(item.Tags) > 0 {
+			header = append(header, "tags="+strings.Join(item.Tags, ","))
+		}
+		lines = append(lines, strings.Join(header, " | "))
+		lines = append(lines, "  "+compactText(item.Text, 300))
+	}
+	return lines
 }
 
 func shouldBypassSandbox(sandbox, approval string) bool {
