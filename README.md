@@ -281,7 +281,7 @@ suncodexclawd logs --docker-compose -f
 - 本机模式下，`status/stop` 不带 `--account` 时，会处理所有已配置机器人，便于发现或停止已经被禁用但仍有残留进程/日志状态的机器人
 - 本机模式下，`restart` 不带 `--account` 时，会先停止所有已配置机器人，再只启动 `enabled = true` 的机器人
 - 如果某个机器人暂时不想启动，直接在 `[bot.<account>]` 下设置 `enabled = false`
-- `list/configure/timer/memory/sync` 也支持显式 `--docker-compose`
+- `list/configure/timer/memory/env/clawhub/sync` 也支持显式 `--docker-compose`
 - 这些工具型命令在 Compose 模式下会优先执行 `docker compose exec suncodexclaw suncodexclawd <subcommand> ...`
 - 如果 Compose 服务还没启动，会先尝试 `docker compose pull suncodexclaw` 后再执行 `docker compose run --rm --workdir /app suncodexclaw <subcommand> ...`
 - 只有拉取失败时，才会回退到 `docker compose run --rm --workdir /app --build suncodexclaw <subcommand> ...`

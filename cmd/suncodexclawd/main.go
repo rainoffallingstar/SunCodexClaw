@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"suncodexclaw/internal/clawhub"
 	"suncodexclaw/internal/codexenv"
 	"suncodexclaw/internal/codexhome"
 	"suncodexclaw/internal/configstore"
@@ -62,6 +63,8 @@ func main() {
 		memoryCmd(os.Args[2:])
 	case "env":
 		envCmd(os.Args[2:])
+	case "clawhub":
+		clawhubCmd(os.Args[2:])
 	case "sync":
 		syncCmd(os.Args[2:])
 	case "update":
@@ -94,6 +97,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  suncodexclawd timer <start|list|show|upsert|update|logs|run|enable|disable|delete>")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd memory <add|list|show|search|delete>")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd env <set|get|list|delete|run>")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd clawhub <search|list|show|file>")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd sync <status|list-remote|push|pull|restore>")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd update [--repo owner/repo] [--version vX.Y.Z] [--bin /path/to/suncodexclawd] [--check] [--dry-run]")
 	fmt.Fprintln(os.Stderr, "  suncodexclawd update --docker-compose [--project-dir .]")
@@ -1256,6 +1260,38 @@ func envCmd(args []string) {
 	}
 }
 
+func clawhubCmd(args []string) {
+	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
+		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
+		if err := runDockerComposeServiceCommand(repo, "clawhub", composeArgs...); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	} else {
+		args = composeArgs
+	}
+	if len(args) == 0 {
+		clawhubUsage()
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "search":
+		clawhubSearch(args[1:])
+	case "list":
+		clawhubList(args[1:])
+	case "show":
+		clawhubShow(args[1:])
+	case "file":
+		clawhubFile(args[1:])
+	case "help", "--help", "-h":
+		clawhubUsage()
+	default:
+		clawhubUsage()
+		os.Exit(2)
+	}
+}
+
 func syncCmd(args []string) {
 	if dockerMode, composeArgs := maybeDockerComposeMode(args); dockerMode {
 		repo := resolveRepoRoot(extractRepoFlag(composeArgs))
@@ -1390,6 +1426,17 @@ func envUsage() {
 	fmt.Fprintln(os.Stderr, "  - env get/list/set default to masked output; use env get --raw only when you really need the plaintext.")
 	fmt.Fprintln(os.Stderr, "  - Prefer env run when you need to pass stored secrets to another command without printing them.")
 	fmt.Fprintln(os.Stderr, "  - In a bot workspace, account-scoped env commands can infer --account from .config.toml.")
+}
+
+func clawhubUsage() {
+	fmt.Fprintln(os.Stderr, "ClawHub Usage:")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd clawhub search [--docker-compose] [--base-url <url>] [--timeout-sec 20] [--limit 10] [--json] <query>")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd clawhub list [--docker-compose] [--base-url <url>] [--timeout-sec 20] [--sort updated|downloads|stars] [--limit 20] [--cursor <cursor>] [--json]")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd clawhub show [--docker-compose] [--base-url <url>] [--timeout-sec 20] [--json] <skill-slug>")
+	fmt.Fprintln(os.Stderr, "  suncodexclawd clawhub file [--docker-compose] [--base-url <url>] [--timeout-sec 20] [--version <ver>] --path <file> <skill-slug>")
+	fmt.Fprintln(os.Stderr, "Notes:")
+	fmt.Fprintln(os.Stderr, "  - Default base URL is https://clawhub.ai; override with --base-url or CLAWHUB_BASE_URL.")
+	fmt.Fprintln(os.Stderr, "  - For Codex skill instructions, prefer `clawhub search` first, then `clawhub file <slug> --path SKILL.md`.")
 }
 
 func syncUsage() {
@@ -2302,6 +2349,113 @@ func envRun(args []string) {
 	}
 }
 
+func clawhubCommon(fs *flag.FlagSet) (*string, *int) {
+	baseURL := fs.String("base-url", getenvDefault("CLAWHUB_BASE_URL", clawhub.DefaultBaseURL), "ClawHub base URL")
+	timeoutSec := fs.Int("timeout-sec", 20, "HTTP timeout in seconds")
+	return baseURL, timeoutSec
+}
+
+func newClawHubClient(baseURL string, timeoutSec int) (*clawhub.Client, error) {
+	timeout := 20 * time.Second
+	if timeoutSec > 0 {
+		timeout = time.Duration(timeoutSec) * time.Second
+	}
+	return clawhub.NewClient(baseURL, &http.Client{Timeout: timeout})
+}
+
+func clawhubSearch(args []string) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{"--json": true})
+	fs := flag.NewFlagSet("clawhub search", flag.ExitOnError)
+	baseURL, timeoutSec := clawhubCommon(fs)
+	limit := fs.Int("limit", 10, "max results")
+	jsonOut := fs.Bool("json", false, "print raw JSON")
+	_ = fs.Parse(args)
+	if fs.NArg() == 0 {
+		clawhubUsage()
+		os.Exit(2)
+	}
+	client, err := newClawHubClient(*baseURL, *timeoutSec)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	payload, err := client.Search(context.Background(), strings.Join(fs.Args(), " "), *limit)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	printClawHubPayload(payload, *jsonOut, formatClawHubSearchPayload(payload))
+}
+
+func clawhubList(args []string) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{"--json": true})
+	fs := flag.NewFlagSet("clawhub list", flag.ExitOnError)
+	baseURL, timeoutSec := clawhubCommon(fs)
+	sortBy := fs.String("sort", "updated", "sort order")
+	limit := fs.Int("limit", 20, "max results")
+	cursor := fs.String("cursor", "", "pagination cursor")
+	jsonOut := fs.Bool("json", false, "print raw JSON")
+	_ = fs.Parse(args)
+	client, err := newClawHubClient(*baseURL, *timeoutSec)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	payload, err := client.List(context.Background(), *sortBy, *limit, *cursor)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	printClawHubPayload(payload, *jsonOut, formatClawHubListPayload(payload))
+}
+
+func clawhubShow(args []string) {
+	args = reorderFlagsBeforePositionals(args, map[string]bool{"--json": true})
+	fs := flag.NewFlagSet("clawhub show", flag.ExitOnError)
+	baseURL, timeoutSec := clawhubCommon(fs)
+	jsonOut := fs.Bool("json", false, "print raw JSON")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		clawhubUsage()
+		os.Exit(2)
+	}
+	client, err := newClawHubClient(*baseURL, *timeoutSec)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	payload, err := client.Show(context.Background(), fs.Arg(0))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	printClawHubPayload(payload, *jsonOut, formatClawHubShowPayload(payload))
+}
+
+func clawhubFile(args []string) {
+	args = reorderFlagsBeforePositionals(args, nil)
+	fs := flag.NewFlagSet("clawhub file", flag.ExitOnError)
+	baseURL, timeoutSec := clawhubCommon(fs)
+	version := fs.String("version", "", "skill version")
+	skillPath := fs.String("path", "", "file path inside skill package")
+	_ = fs.Parse(args)
+	if strings.TrimSpace(*skillPath) == "" || fs.NArg() != 1 {
+		clawhubUsage()
+		os.Exit(2)
+	}
+	client, err := newClawHubClient(*baseURL, *timeoutSec)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	body, err := client.File(context.Background(), fs.Arg(0), *skillPath, *version)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Print(string(body))
+}
+
 func syncStatusCmd(args []string) {
 	fs := flag.NewFlagSet("sync status", flag.ExitOnError)
 	repoFlag := fs.String("repo", "", "repo root (default: auto-detect from cwd)")
@@ -2696,6 +2850,17 @@ func normalizeStringSlice(values []string) []string {
 	return out
 }
 
+func compactText(value string, max int) string {
+	text := strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if max <= 0 || len(text) <= max {
+		return text
+	}
+	if max <= 3 {
+		return text[:max]
+	}
+	return text[:max-3] + "..."
+}
+
 func emptyFallback(value, fallback string) string {
 	if strings.TrimSpace(value) == "" {
 		return fallback
@@ -2893,6 +3058,180 @@ func appendEnvOverride(env []string, key, value string) []string {
 		out = append(out, prefix+value)
 	}
 	return out
+}
+
+func printClawHubPayload(payload map[string]any, jsonOut bool, fallbackText string) {
+	if jsonOut {
+		body, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(body))
+		return
+	}
+	if strings.TrimSpace(fallbackText) == "" {
+		body, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(body))
+		return
+	}
+	fmt.Println(fallbackText)
+}
+
+func formatClawHubSearchPayload(payload map[string]any) string {
+	results := clawhubResultList(payload)
+	if len(results) == 0 {
+		return "(no clawhub search results)"
+	}
+	lines := make([]string, 0, len(results))
+	for _, item := range results {
+		slug := clawhubString(item, "slug", "id")
+		name := clawhubString(item, "name", "title")
+		description := compactText(clawhubString(item, "description", "summary"), 180)
+		version := clawhubString(item, "latestVersion", "version")
+		updatedAt := clawhubString(item, "updatedAt", "updated_at")
+		score := clawhubNumberString(item, "score")
+		line := joinNonEmpty(" | ", []string{
+			emptyFallback(slug, "(unknown-slug)"),
+			name,
+			version,
+			score,
+			updatedAt,
+		})
+		if description != "" {
+			line += " | " + description
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatClawHubListPayload(payload map[string]any) string {
+	results := clawhubResultList(payload)
+	if len(results) == 0 {
+		return "(no clawhub skills)"
+	}
+	lines := make([]string, 0, len(results)+1)
+	for _, item := range results {
+		slug := clawhubString(item, "slug", "id")
+		name := clawhubString(item, "name", "title")
+		version := clawhubString(item, "latestVersion", "version")
+		updatedAt := clawhubString(item, "updatedAt", "updated_at")
+		lines = append(lines, joinNonEmpty(" | ", []string{
+			emptyFallback(slug, "(unknown-slug)"),
+			name,
+			version,
+			updatedAt,
+		}))
+	}
+	if nextCursor := clawhubString(payload, "nextCursor", "cursor", "next_cursor"); nextCursor != "" {
+		lines = append(lines, "next_cursor="+nextCursor)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatClawHubShowPayload(payload map[string]any) string {
+	skill := clawhubNestedMap(payload, "skill")
+	if len(skill) == 0 {
+		return ""
+	}
+	lines := []string{
+		"slug=" + emptyFallback(clawhubString(skill, "slug", "id"), "(unknown)"),
+		"name=" + emptyFallback(clawhubString(skill, "name", "title"), "(unnamed)"),
+		"latest_version=" + emptyFallback(clawhubString(skill, "latestVersion", "version"), "(unknown)"),
+	}
+	if owner := clawhubString(skill, "owner", "author"); owner != "" {
+		lines = append(lines, "owner="+owner)
+	}
+	if summary := compactText(clawhubString(skill, "description", "summary"), 400); summary != "" {
+		lines = append(lines, "summary="+summary)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func clawhubResultList(payload map[string]any) []map[string]any {
+	for _, key := range []string{"results", "skills", "items", "data"} {
+		if raw, ok := payload[key]; ok {
+			if list := clawhubAnySliceToMaps(raw); len(list) > 0 {
+				return list
+			}
+		}
+	}
+	return nil
+}
+
+func clawhubAnySliceToMaps(raw any) []map[string]any {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if mapped, ok := item.(map[string]any); ok {
+			out = append(out, mapped)
+		}
+	}
+	return out
+}
+
+func clawhubNestedMap(payload map[string]any, keys ...string) map[string]any {
+	for _, key := range keys {
+		if raw, ok := payload[key]; ok {
+			if mapped, ok := raw.(map[string]any); ok {
+				return mapped
+			}
+		}
+	}
+	return payload
+}
+
+func clawhubString(payload map[string]any, keys ...string) string {
+	for _, key := range keys {
+		raw, ok := payload[key]
+		if !ok {
+			continue
+		}
+		switch v := raw.(type) {
+		case string:
+			if strings.TrimSpace(v) != "" {
+				return strings.TrimSpace(v)
+			}
+		case float64:
+			return strconv.FormatFloat(v, 'f', -1, 64)
+		case int:
+			return strconv.Itoa(v)
+		}
+	}
+	return ""
+}
+
+func clawhubNumberString(payload map[string]any, key string) string {
+	raw, ok := payload[key]
+	if !ok {
+		return ""
+	}
+	switch v := raw.(type) {
+	case float64:
+		return "score=" + strconv.FormatFloat(v, 'f', 3, 64)
+	case int:
+		return "score=" + strconv.Itoa(v)
+	default:
+		return ""
+	}
+}
+
+func joinNonEmpty(sep string, parts []string) string {
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			filtered = append(filtered, trimmed)
+		}
+	}
+	return strings.Join(filtered, sep)
 }
 
 func defaultSyncPullTarget(account string, snapshot string) string {

@@ -90,6 +90,13 @@ var defaultEnvSystemGuide = strings.Join([]string{
 	"只有在 absolutely necessary 且后续不会回显的情况下，才使用 `suncodexclawd env get --raw ...`；拿到后不要在回复里复述这个值。",
 }, "\n")
 
+var defaultClawHubSystemGuide = strings.Join([]string{
+	"技能检索：如果用户提到 skill、skills、技能、ClawHub、提示词模板、Codex 技能，优先使用 `suncodexclawd clawhub ...` 检索公开技能，不要凭记忆编造技能名称或内容。",
+	"先用 `suncodexclawd clawhub search <关键词>` 找候选，再用 `suncodexclawd clawhub show <skill-slug>` 看元数据。",
+	"如果需要读取技能正文或安装说明，优先使用 `suncodexclawd clawhub file <skill-slug> --path SKILL.md`；需要其他文件时再把 `--path` 换成对应相对路径。",
+	"如果用户只是想浏览热门或最近更新的技能，可用 `suncodexclawd clawhub list --sort updated` 或其他排序方式。",
+}, "\n")
+
 func RunCodex(ctx context.Context, cfg CodexConfig, request CodexRunRequest) (CodexReply, error) {
 	prompt := strings.TrimSpace(request.Prompt)
 	fallbackPrompt := strings.TrimSpace(request.FallbackPrompt)
@@ -353,6 +360,8 @@ func buildPrompt(cfg Config, chatID, userText, title string, history []historyEn
 		"",
 		defaultEnvSystemGuide,
 		"",
+		defaultClawHubSystemGuide,
+		"",
 		"当前机器人账号："+cfg.AccountName,
 		"当前聊天 chat_id："+emptyFallback(chatID, "(unknown)"),
 		"当前工作目录："+emptyFallback(cfg.Codex.Cwd, emptyFallback(cfg.RepoRoot, ".")),
@@ -399,6 +408,8 @@ func buildResumePrompt(cfg Config, chatID, userText string, imageCount int) stri
 		defaultSyncSystemGuide,
 		"",
 		defaultEnvSystemGuide,
+		"",
+		defaultClawHubSystemGuide,
 		"",
 		"当前机器人账号：" + cfg.AccountName,
 		"当前聊天 chat_id：" + emptyFallback(chatID, "(unknown)"),
