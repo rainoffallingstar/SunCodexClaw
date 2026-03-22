@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"suncodexclaw/internal/memory"
 )
@@ -162,7 +163,7 @@ func runCodexExecOnce(ctx context.Context, cfg CodexConfig, prompt string, image
 		childEnv = append(childEnv, "OPENAI_BASE_URL="+cfg.BaseURL, "OPENAI_API_BASE="+cfg.BaseURL)
 	}
 	cmd.Env = childEnv
-	cmd.Stdin = strings.NewReader(strings.TrimSpace(prompt))
+	cmd.Stdin = strings.NewReader(sanitizeUTF8(strings.TrimSpace(prompt)))
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return CodexReply{}, err
@@ -499,6 +500,13 @@ func compactText(value string, max int) string {
 	return text[:max-3] + "..."
 }
 
+func sanitizeUTF8(value string) string {
+	if value == "" || utf8.ValidString(value) {
+		return value
+	}
+	return strings.ToValidUTF8(value, "\uFFFD")
+}
+
 func emptyFallback(value, fallback string) string {
 	if strings.TrimSpace(value) == "" {
 		return fallback
@@ -583,7 +591,7 @@ func syncCodexThreadTitle(threadID, threadTitle string) bool {
 	cmd := exec.Command("sqlite3", dbPath, sql)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		fmt.Printf("codex_thread_title_sync=error thread_id=%s message=%s\n", targetThreadID, compactText(strings.TrimSpace(string(out)), 400))
+		fmt.Printf("codex_thread_title_sync=error thread_id=%s message=%s\n", targetThreadID, compactText(commandFailureMessage(err, out), 400))
 		return false
 	}
 	return true
@@ -607,7 +615,7 @@ func readCodexThreadExecutionPolicy(threadID string) *codexExecutionPolicy {
 	cmd := exec.Command("sqlite3", "-json", dbPath, sql)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		fmt.Printf("codex_thread_policy=error thread_id=%s message=%s\n", targetThreadID, compactText(strings.TrimSpace(string(out)), 400))
+		fmt.Printf("codex_thread_policy=error thread_id=%s message=%s\n", targetThreadID, compactText(commandFailureMessage(err, out), 400))
 		return nil
 	}
 	var rows []map[string]any
@@ -628,6 +636,17 @@ func readCodexThreadExecutionPolicy(threadID string) *codexExecutionPolicy {
 		policy.SandboxType = strings.TrimSpace(fmt.Sprint(value["type"]))
 	}
 	return policy
+}
+
+func commandFailureMessage(err error, out []byte) string {
+	text := strings.TrimSpace(sanitizeUTF8(string(out)))
+	if text != "" {
+		return text
+	}
+	if err != nil {
+		return strings.TrimSpace(err.Error())
+	}
+	return ""
 }
 
 func policySandbox(policy *codexExecutionPolicy) string {

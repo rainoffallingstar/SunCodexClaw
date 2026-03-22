@@ -17,7 +17,7 @@ ENV HOME=/home/node
 ENV CODEX_HOME=/home/node/.codex
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends bash ca-certificates git procps tini \
+  && apt-get install -y --no-install-recommends bash ca-certificates git procps sqlite3 tini \
   && rm -rf /var/lib/apt/lists/*
 
 # Install Codex CLI (package name can be overridden at build time)

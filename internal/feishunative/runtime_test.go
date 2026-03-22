@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
@@ -2241,6 +2242,28 @@ func TestCodexThreadPolicyAndTitleSync(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(out)); got != "新标题" {
 		t.Fatalf("title = %q, want 新标题", got)
+	}
+}
+
+func TestSanitizeUTF8ReplacesInvalidPromptBytes(t *testing.T) {
+	input := "引用文件路径: /tmp/\xffreport.txt"
+	got := sanitizeUTF8(input)
+	if !utf8.ValidString(got) {
+		t.Fatalf("sanitizeUTF8() returned invalid UTF-8: %q", got)
+	}
+	if !strings.Contains(got, "引用文件路径: /tmp/") {
+		t.Fatalf("sanitizeUTF8() lost prefix: %q", got)
+	}
+	if !strings.Contains(got, "report.txt") {
+		t.Fatalf("sanitizeUTF8() lost suffix: %q", got)
+	}
+}
+
+func TestCommandFailureMessageFallsBackToExecError(t *testing.T) {
+	err := errors.New(`exec: "sqlite3": executable file not found in $PATH`)
+	got := commandFailureMessage(err, nil)
+	if !strings.Contains(got, `exec: "sqlite3": executable file not found in $PATH`) {
+		t.Fatalf("commandFailureMessage() = %q", got)
 	}
 }
 
